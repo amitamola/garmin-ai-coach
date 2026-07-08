@@ -26,6 +26,11 @@ from garminconnect import Garmin
 STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
 BRIEF_STATE = os.path.join(STATE_DIR, "last_brief_date.txt")
 SETS_CACHE = os.path.join(STATE_DIR, "exercise_sets_cache.json")
+# A recently-finished session can still be EDITED in Garmin Connect (fixing a
+# mis-detected exercise type, reps, etc). Within this many days we always refetch
+# its logged sets so corrections show up; older sessions are treated as immutable
+# and served from the by-id cache.
+EDITABLE_DAYS = 3
 # A night is considered "logged" once at least this much sleep is recorded.
 MIN_SLEEP_SECONDS = 90 * 60
 
@@ -302,7 +307,8 @@ def build_snapshot(d_today=None):
         activities = [_trim_activity(a) for a in activities[:15]]
         # Attach logged sets/reps/weights to the most recent strength sessions so
         # workout recommendations can see muscle groups trained and avoid stacking.
-        # Sets are immutable once logged -> cached by activity_id (near-zero cost).
+        # Cached by activity_id, BUT recent sessions may still be edited in Garmin
+        # Connect, so those are refetched every build (see EDITABLE_DAYS).
         cache = _load_sets_cache()
         changed = False
         n_strength = 0
@@ -311,8 +317,9 @@ def build_snapshot(d_today=None):
                 break
             if a.get("type") and "strength" in a["type"] and a.get("activity_id") is not None:
                 had = str(a["activity_id"]) in cache
-                logged = _sets_for(g, a["activity_id"], cache)
-                changed = changed or not had
+                recent = _within_days(a.get("start"), EDITABLE_DAYS)
+                logged = _sets_for(g, a["activity_id"], cache, refresh=recent)
+                changed = changed or (not had) or recent
                 if logged:
                     a["logged_sets"] = logged
                 n_strength += 1
@@ -807,15 +814,28 @@ def _save_sets_cache(cache):
         pass
 
 
-def _sets_for(g, activity_id, cache=None):
-    """Logged sets for one activity, using an immutable-by-id cache when given."""
+def _within_days(start_local, days):
+    """True if a 'YYYY-MM-DD ...' local timestamp falls within the last `days` days.
+    Unparseable/absent dates return True so we err on the side of refetching."""
+    try:
+        d = date.fromisoformat(str(start_local)[:10])
+    except ValueError:
+        return True
+    return 0 <= (date.today() - d).days <= days
+
+
+def _sets_for(g, activity_id, cache=None, refresh=False):
+    """Logged sets for one activity. Cached by activity_id, but a recently-finished
+    session can still be edited in Garmin Connect, so callers pass refresh=True to
+    bypass the cached value and pull fresh (the cache is then updated). A transient
+    empty/failed refetch never clobbers a previously-good cached value."""
     key = str(activity_id)
-    if cache is not None and key in cache:
+    if cache is not None and key in cache and not refresh:
         return cache[key]
     xs = safe(lambda: g.get_activity_exercise_sets(activity_id))
     parsed = _parse_exercise_sets(xs) if isinstance(xs, dict) and "__error__" not in xs else None
-    if cache is not None:
-        cache[key] = parsed  # cache misses (None) too, so we never refetch
+    if cache is not None and (parsed is not None or key not in cache):
+        cache[key] = parsed  # store misses too (once), so we don't refetch nothing forever
     return parsed
 
 

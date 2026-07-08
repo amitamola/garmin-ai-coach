@@ -46,6 +46,7 @@ OWNER_FILE = os.path.join(STATE, "telegram_chat_id.txt")
 OFFSET_FILE = os.path.join(STATE, "tg_offset.txt")
 LAST_SUMMARY_FILE = os.path.join(STATE, "last_summary_date.txt")
 HISTORY_FILE = os.path.join(STATE, "conversation.json")
+TODAYS_BRIEF_FILE = os.path.join(STATE, "todays_brief.json")
 PROMPTS = os.path.join(BASE, "prompts")
 PROFILE_FILE = os.path.join(BASE, "profile.md")
 SUMMARY_PROMPT_FILE = os.path.join(PROMPTS, "summary_prompt.md")
@@ -162,6 +163,30 @@ def clear_history():
         os.remove(HISTORY_FILE)
     except FileNotFoundError:
         pass
+
+
+def save_todays_brief(text):
+    """Persist today's morning brief (recovery read + workout/recommendations) so the
+    coach can still reference 'the plan/recommendations' later in the day even after the
+    volatile chat window has scrolled past it."""
+    try:
+        with open(TODAYS_BRIEF_FILE, "w", encoding="utf-8") as fh:
+            json.dump({"date": date.today().isoformat(), "text": text},
+                      fh, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001
+        log.error("brief save failed: %s", exc)
+
+
+def todays_brief_text():
+    """The brief sent earlier TODAY, or '' if none yet today (auto-expires by date)."""
+    try:
+        with open(TODAYS_BRIEF_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+    if isinstance(d, dict) and d.get("date") == date.today().isoformat():
+        return (d.get("text") or "").strip()
+    return ""
 
 
 def _day_tag(date_str):
@@ -855,7 +880,7 @@ DATA_USE_DIRECTIVE = (
 
 
 def _assemble(prompt_file, question=None, include_history=True,
-              data=None, data_key="GARMIN_JSON"):
+              data=None, data_key="GARMIN_JSON", include_brief=True):
     if data is None:
         data = garmin_coach.build_snapshot()
     js = json.dumps(data, indent=2, default=str)
@@ -871,6 +896,14 @@ def _assemble(prompt_file, question=None, include_history=True,
         parts.append("\nACTIVE HEALTH FLAGS (injuries/illness the user reported and has NOT "
                      "marked recovered - respect these: adapt or rest, don't train through "
                      "them, and check how they're doing):\n" + flags + "\n")
+    if include_brief:
+        brief = todays_brief_text()
+        if brief:
+            parts.append("\nTODAY'S BRIEF YOU ALREADY SENT (the recovery read + workout and "
+                         "recommendations you gave the user in this morning's brief - THIS is what "
+                         "they mean by 'the plan' / 'the recommendations' / 'what you told me to "
+                         "do'. Use it to judge whether they followed it and to stay consistent):\n"
+                         + brief + "\n")
     notes = recent_journal_text()
     if notes:
         parts.append("\nNOTES YOU'VE SHARED (durable context the user logged):\n"
@@ -896,13 +929,14 @@ def _assemble(prompt_file, question=None, include_history=True,
 
 
 def generate_summary():
-    prompt, snap = _assemble(SUMMARY_PROMPT_FILE, include_history=True)
+    prompt, snap = _assemble(SUMMARY_PROMPT_FILE, include_history=True, include_brief=False)
     if isinstance(snap, dict) and "__error__" in snap:
         return None, snap
     text = run_llm(prompt)
     if text:
         append_history("user", "GMS (requested the morning brief)")
         append_history("agbot", text)
+        save_todays_brief(text)
     return text, snap
 
 
@@ -1006,6 +1040,11 @@ def generate_debrief(activity):
     if flags:
         parts.append("\nACTIVE HEALTH FLAGS (injuries/illness to respect - adapt or rest, "
                      "don't train through them):\n" + flags + "\n")
+    brief = todays_brief_text()
+    if brief:
+        parts.append("\nTODAY'S BRIEF YOU ALREADY SENT (the workout and recommendations you "
+                     "gave the user this morning - THIS is 'the plan' they were asked to follow; "
+                     "compare what they actually just did against it):\n" + brief + "\n")
     notes = recent_journal_text()
     if notes:
         parts.append("\nNOTES YOU'VE SHARED (durable, date-stamped - includes the meals "
