@@ -59,8 +59,11 @@ PERF_PROMPT_FILE = os.path.join(PROMPTS, "performance_prompt.md")
 JOURNAL_FILE = os.path.join(STATE, "journal.jsonl")
 HEALTH_FILE = os.path.join(STATE, "health.jsonl")
 LAST_ACTIVITY_FILE = os.path.join(STATE, "last_activity_id.txt")
+PENDING_DEBRIEF_FILE = os.path.join(STATE, "pending_debrief.json")
 RED_FLAGS_FILE = os.path.join(STATE, "red_flags_date.txt")
 MEAL_STATE_FILE = os.path.join(STATE, "meal_reminders.json")
+HYDRATION_STATE_FILE = os.path.join(STATE, "hydration_reminders.json")
+EXERCISE_STATE_FILE = os.path.join(STATE, "exercise_adherence.json")
 FITNESS_FILE = os.path.join(STATE, "fitness_profile.json")
 INCOMING = os.path.join(STATE, "incoming")
 os.makedirs(INCOMING, exist_ok=True)
@@ -97,6 +100,22 @@ MEAL_REMINDERS = (
 )
 MEAL_CATCHUP_MIN = 90  # still nudge if the bot came online within this window after the time
 
+# Hydration nudges: a light "drink water" reminder every HYDRATION_EVERY_H hours, on the hour,
+# from HYDRATION_START to HYDRATION_END local (inclusive). Logging is done on the watch, so
+# these are pure nudges - deduped per slot per day in HYDRATION_STATE_FILE, with a catch-up
+# guard (shorter than the gap) so a restart never double-pings or fires a stale slot late.
+HYDRATION_START = 8
+HYDRATION_END = 22
+HYDRATION_EVERY_H = 2
+HYDRATION_CATCHUP_MIN = 55
+HYDRATION_MESSAGES = (
+    "\U0001F4A7 AgBot \u00B7 Water check - take a few good sips now. Staying topped up "
+    "helps energy, recovery and focus.",
+    "\U0001F4A7 AgBot \u00B7 Hydration nudge - grab a glass of water. Little and often "
+    "beats gulping it all at once.",
+    "\U0001F6B0 AgBot \u00B7 Time to hydrate - a cup of water now keeps you ahead of thirst.",
+)
+
 POLL_TIMEOUT = 50          # long-poll seconds
 COPILOT_TIMEOUT = 180      # seconds for a single generation
 SINGLETON_PORT = 49517     # localhost lock so only one instance polls
@@ -109,6 +128,9 @@ JOURNAL_KEEP = 60            # journal lines kept on disk
 HEALTH_ACTIVE_DAYS = 45      # active injury/illness flags injected for up to this long
 HEALTH_PROMPT_CHARS = 800    # char budget for injected health flags
 ACTIVITY_CHECK_SECS = 300    # how often to poll for a finished workout
+DEBRIEF_QUIET_SECS = 90 * 60  # after the LAST logged activity, wait this long (no new
+                              # activity) before the single collective debrief - a session is
+                              # several back-to-back activities; debrief the whole thing once
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,6 +209,49 @@ def todays_brief_text():
     if isinstance(d, dict) and d.get("date") == date.today().isoformat():
         return (d.get("text") or "").strip()
     return ""
+
+
+def _load_pending():
+    """Pending post-workout debrief marker: {'last_ts': epoch of the last new activity}."""
+    try:
+        with open(PENDING_DEBRIEF_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_pending(d):
+    try:
+        with open(PENDING_DEBRIEF_FILE, "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+    except Exception as exc:  # noqa: BLE001
+        log.error("pending save failed: %s", exc)
+
+
+def _clear_pending():
+    try:
+        os.remove(PENDING_DEBRIEF_FILE)
+    except FileNotFoundError:
+        pass
+
+
+_REVIEW_CUES = (
+    "how did i do", "how'd i do", "how did that go", "how did it go", "did i do well",
+    "did i follow", "follow the plan", "follow your plan", "stick to the plan",
+    "did i stick", "follow the recommendation", "follow your recommendation",
+    "how was my", "how was that", "how was the workout", "how was the session",
+    "how did my workout", "how did my session", "rate my", "grade my", "assess my",
+    "review my", "debrief", "did i hit", "did i nail", "did i complete", "did i cover",
+    "how was training", "was that a good",
+)
+
+
+def _is_workout_review(q):
+    """True if the user is asking how they did / whether they followed the plan, so we can
+    cancel the pending auto-debrief and not repeat the same feedback 90 min later."""
+    ql = " " + (q or "").lower() + " "
+    return any(cue in ql for cue in _REVIEW_CUES)
 
 
 def _day_tag(date_str):
@@ -948,6 +1013,8 @@ def generate_qa(question):
     if text:
         append_history("user", question)
         append_history("agbot", text)
+    if _is_workout_review(question):
+        _clear_pending()  # asked how they did -> don't also auto-debrief this session later
     return text, snap
 
 
@@ -1030,7 +1097,17 @@ def generate_nutrition():
     return text, snap
 
 
-def generate_debrief(activity):
+def generate_debrief(activities):
+    """Collective post-workout debrief. `activities` is the just-finished session block - a
+    list of trimmed activities the user logged back-to-back, often split across Garmin types
+    (a cardio warm-up, the Strength block, a run, a Pilates/stretch cool-down). The WHOLE
+    session is judged against this morning's plan at once, so we never nag after a single
+    part. Accepts a single activity dict too, for back-compat."""
+    if isinstance(activities, dict):
+        activities = [activities]
+    activities = [a for a in (activities or []) if isinstance(a, dict)]
+    if not activities:
+        return None
     snap = garmin_coach.build_snapshot()
     parts = [
         read_file(DEBRIEF_PROMPT_FILE),
@@ -1044,7 +1121,7 @@ def generate_debrief(activity):
     if brief:
         parts.append("\nTODAY'S BRIEF YOU ALREADY SENT (the workout and recommendations you "
                      "gave the user this morning - THIS is 'the plan' they were asked to follow; "
-                     "compare what they actually just did against it):\n" + brief + "\n")
+                     "judge the WHOLE session below against it, collectively):\n" + brief + "\n")
     notes = recent_journal_text()
     if notes:
         parts.append("\nNOTES YOU'VE SHARED (durable, date-stamped - includes the meals "
@@ -1057,20 +1134,33 @@ def generate_debrief(activity):
                      "earlier day was already eaten, don't treat it as upcoming; oldest to "
                      "newest):\n" + hist + "\n")
     parts.append("\nPROFILE:\n" + read_file(PROFILE_FILE))
-    atype = str((activity or {}).get("type") or "")
-    if "strength" in atype:
-        sets = garmin_coach.exercise_sets((activity or {}).get("activity_id"))
-        if sets:
-            parts.append("\n\nLOGGED_SETS (per exercise: #sets, rep range, top weight kg):\n"
-                         + json.dumps(sets, indent=2, default=str))
-    parts.append("\n\nJUST_FINISHED_ACTIVITY:\n"
-                 + json.dumps(activity, indent=2, default=str))
-    extras = garmin_coach.activity_extras((activity or {}).get("activity_id"))
-    if isinstance(extras, dict) and extras and "__error__" not in extras:
-        parts.append("\n\nACTIVITY_EXTRAS (time-in-HR-zone in minutes; weather if outdoor):\n"
-                     + json.dumps(extras, indent=2, default=str))
-    parts.append("\n\nGARMIN_JSON:\n"
-                 + json.dumps(snap, indent=2, default=str))
+    for a in activities:
+        if "strength" in str(a.get("type") or ""):
+            sets = garmin_coach.exercise_sets(a.get("activity_id"))
+            if sets:
+                parts.append("\n\nLOGGED_SETS for " + json.dumps(a.get("name") or a.get("type"))
+                             + " (per exercise: #sets, rep range, top weight kg):\n"
+                             + json.dumps(sets, indent=2, default=str))
+    if len(activities) > 1:
+        header = ("SESSION_JUST_FINISHED - these " + str(len(activities)) + " activities were "
+                  "logged back-to-back and TOGETHER form ONE workout session (the user records "
+                  "each part under a different Garmin type - e.g. a cardio warm-up, the Strength "
+                  "block, a run, a Pilates/stretch cool-down). Judge this morning's plan as "
+                  "COLLECTIVELY covered by ALL of them together: estimate rough %-completion, "
+                  "flag a genuinely-missing piece only once, and if they did something OFF the "
+                  "plan note the pivot supportively - never ask 'is that all?' after one part")
+    else:
+        header = "JUST_FINISHED_ACTIVITY"
+    parts.append("\n\n" + header + ":\n" + json.dumps(activities, indent=2, default=str))
+    extras_all = {}
+    for a in activities:
+        ex = garmin_coach.activity_extras(a.get("activity_id"))
+        if isinstance(ex, dict) and ex and "__error__" not in ex:
+            extras_all[str(a.get("name") or a.get("activity_id"))] = ex
+    if extras_all:
+        parts.append("\n\nACTIVITY_EXTRAS (per activity; time-in-HR-zone minutes; weather if "
+                     "outdoor):\n" + json.dumps(extras_all, indent=2, default=str))
+    parts.append("\n\nGARMIN_JSON:\n" + json.dumps(snap, indent=2, default=str))
     parts.append("\n\n" + DATA_USE_DIRECTIVE)
     text = run_llm("".join(parts))
     if text:
@@ -1295,6 +1385,9 @@ def do_voice(chat_id, msg):
 HELP_TEXT = (
     "\U0001F916 **AgBot** - your personal Garmin coach.\n\n"
     "- **GMS** (or 'summary') - your morning brief: recovery read + today's workout.\n"
+    "- **DWRE** ('done with recommended exercise') - I pull your whole day's session "
+    "together (warm-up + strength + cardio + stretch, however you split it in Garmin) and "
+    "grade it against the plan.\n"
     "- **week** - a 7-day trend review.  **nutrition** - today's calorie/protein targets.\n"
     "- **performance** - your fitness stats: VO2max, fitness age, race predictions, "
     "endurance & hill score, cycling FTP, weekly intensity minutes.\n"
@@ -1310,15 +1403,70 @@ HELP_TEXT = (
     "- \U0001FA79 **Tell me if you're hurt or unwell** ('my knee hurts', 'I feel sick') and "
     "I'll ask what's going on, remember it, and adapt your training (or call for rest) until "
     "you reply **recovered**.\n"
-    "- \U0001F37D\uFE0F I nudge you to log meals at 8:30am, 12:15pm & 9pm - just reply "
-    "'log: <what you ate>' and it feeds your nutrition coaching.\n"
+    "- \U0001F37D\uFE0F I nudge you to log meals at 8:30am, 12:15pm & 9pm, and \U0001F4A7 "
+    "remind you to drink water every 2h from 8am-10pm (log the water on your watch).\n"
+    "- \U0001F3CB\uFE0F I check in through the day (10am / 12 / 4pm / 9pm) on whether you did "
+    "the recommended exercise - reply **DWRE** when done, or 'rest day' / 'skip today' to stop "
+    "the check-ins for the day.\n"
     "- **Ask me anything**, e.g. 'how did I sleep?', 'what's my predicted 10K time?', "
     "'give me a 30-min rowing session'.\n"
-    "- I auto-send your brief by ~9:30am, debrief you after a workout (with your logged "
-    "sets/reps for strength), and warn you on a rough morning.\n"
+    "- I auto-send your brief by ~9:30am, and ~90 min after your last logged activity I send "
+    "ONE combined debrief of the whole session vs the plan (or reply DWRE to get it now).\n"
     "- **/reset** clears our recent-chat memory.\n\n"
     "Everything is based on your live Garmin data and your gym equipment."
 )
+
+def do_dwre(chat_id):
+    """User signalled they're done with today's recommended exercise (DWRE). Mark today done
+    so the check-ins stop, cancel any pending auto-debrief, and send the collective wrap-up."""
+    log.info("DWRE - marking today's exercise done, sending collective summary")
+    _set_exercise_status("done")
+    _clear_pending()
+    send_message(chat_id, "\U0001F916 AgBot: nice work \u2713 pulling your whole session "
+                 "together...")
+    block = garmin_coach.session_block()
+    if isinstance(block, dict) and "__error__" in block:
+        send_message(chat_id, "\U0001F916 AgBot: I couldn't reach Garmin just now - you're "
+                     "marked done for the day; ask me later for the full breakdown.")
+        return
+    if not block:
+        send_message(chat_id, "\U0001F916 AgBot: marked you done for today \u2713 - but I don't "
+                     "see any activity synced from your watch yet. Sync it and I'll give you the "
+                     "full wrap-up, or tell me what you did.")
+        return
+    text = generate_debrief(block)
+    if text:
+        send_message(chat_id, text)
+
+
+def do_skip_exercise(chat_id):
+    """User is not exercising today - stop the check-ins for the rest of the day."""
+    log.info("Exercise skipped for today (user opt-out)")
+    _set_exercise_status("skip")
+    _clear_pending()
+    send_message(chat_id, "\U0001F916 AgBot: all good \u2713 no exercise pencilled in for today "
+                 "- I'll stop the check-ins and pick it up again tomorrow. Rest up and keep the "
+                 "water going. \U0001F4A7")
+
+
+DWRE_EXACT = {"dwre", "/dwre", "done", "all done", "done for the day", "finished",
+              "done with exercise", "done with my exercise", "done with the exercise",
+              "done with workout", "done with my workout", "done exercising",
+              "finished exercising", "finished my workout", "finished my exercise",
+              "completed my exercise", "done with today's exercise", "i'm done", "im done"}
+DWRE_SUBSTR = ("done with recommended exercise", "done with the recommended exercise",
+               "done with all the recommended", "done with my recommended",
+               "finished the recommended exercise", "done with today's recommended",
+               "done with all my exercise", "done with all exercise")
+SKIP_EXACT = {"skip", "/skip", "noex", "rest day", "skip today", "skipping today",
+              "skip exercise", "no exercise today", "not exercising today", "no workout today",
+              "not working out today", "taking today off", "taking the day off",
+              "resting today", "no exercise", "rest today"}
+SKIP_SUBSTR = ("not exercising today", "no exercise today", "not going to exercise",
+               "won't be exercising", "wont be exercising", "not doing any exercise",
+               "no exercise for me today", "skipping exercise", "rest day today",
+               "won't exercise today", "wont exercise today", "not doing exercise today")
+
 
 SUMMARY_TRIGGERS = {"gms", "summary", "/summary", "/gms", "morning", "brief",
                     "report", "morning summary", "/report", "/brief"}
@@ -1354,6 +1502,10 @@ def classify(text):
                "vo2", "vo2max", "race", "races", "race predictions",
                "fitness age", "endurance", "performance stats", "perf"):
         return "performance", ""
+    if low in DWRE_EXACT or any(p in low for p in DWRE_SUBSTR):
+        return "dwre", ""
+    if low in SKIP_EXACT or any(p in low for p in SKIP_SUBSTR):
+        return "skip_exercise", ""
     if (low == "" or low in SUMMARY_TRIGGERS or low.startswith("gms")
             or ("morning" in low and "summ" in low)):
         return "summary", ""
@@ -1404,6 +1556,10 @@ def _route_text(chat_id, text):
     elif kind == "performance":
         send_message(chat_id, "\U0001F916 AgBot: pulling your performance metrics...")
         do_performance(chat_id)
+    elif kind == "dwre":
+        do_dwre(chat_id)
+    elif kind == "skip_exercise":
+        do_skip_exercise(chat_id)
     elif kind == "summary":
         send_message(chat_id, "\U0001F916 AgBot: on it - pulling your Garmin data...")
         do_summary(chat_id)
@@ -1523,6 +1679,143 @@ def maybe_meal_reminders():
         write_file(MEAL_STATE_FILE, json.dumps(sent))
 
 
+def hydration_slots_due(now, sent, today):
+    """Pure schedule core (unit-testable): given the current datetime, the per-slot sent-map
+    and today's date-string, return [(idx, slot, hour, should_send)] for hydration slots that
+    have arrived today and aren't already sent; should_send is False past the catch-up window."""
+    due = []
+    slots = list(range(HYDRATION_START, HYDRATION_END + 1, HYDRATION_EVERY_H))
+    for idx, hh in enumerate(slots):
+        slot = "h%02d" % hh
+        if sent.get(slot) == today:
+            continue
+        target = now.replace(hour=hh, minute=0, second=0, microsecond=0)
+        if now < target:
+            continue
+        late_min = (now - target).total_seconds() / 60
+        due.append((idx, slot, hh, late_min <= HYDRATION_CATCHUP_MIN))
+    return due
+
+
+def maybe_hydration_reminders():
+    own = owner()
+    if not own:
+        return
+    now = datetime.now()
+    today = date.today().isoformat()
+    try:
+        sent = json.loads(read_file(HYDRATION_STATE_FILE) or "{}")
+    except Exception:  # noqa: BLE001
+        sent = {}
+    if not isinstance(sent, dict):
+        sent = {}
+    changed = False
+    for idx, slot, hh, should in hydration_slots_due(now, sent, today):
+        if should:
+            log.info("Hydration reminder %s at %s", slot, now.strftime("%H:%M"))
+            send_message(own, HYDRATION_MESSAGES[idx % len(HYDRATION_MESSAGES)])
+        else:
+            log.info("Hydration %s missed window - skipping", slot)
+        sent[slot] = today
+        changed = True
+    if changed:
+        write_file(HYDRATION_STATE_FILE, json.dumps(sent))
+
+
+# ---- Daily exercise-adherence check-ins -------------------------------------------------
+# Ask a few times a day whether the recommended exercise got done. Fires ONLY while today is
+# unresolved; once the user replies DWRE (done -> summary) or that they're skipping/resting,
+# the check-ins stop for the day. Absence of a done/skip marker = 'pending'.
+EXERCISE_CHECKIN_HOURS = (10, 12, 16, 21)
+EXERCISE_CHECKIN_CATCHUP_MIN = 55
+
+
+def _load_exercise_state():
+    try:
+        with open(EXERCISE_STATE_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    if not isinstance(d, dict) or d.get("date") != date.today().isoformat():
+        return {}   # stale day -> fresh 'pending' state
+    return d
+
+
+def _save_exercise_state(d):
+    d["date"] = date.today().isoformat()
+    try:
+        with open(EXERCISE_STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+    except Exception as exc:  # noqa: BLE001
+        log.error("exercise state save failed: %s", exc)
+
+
+def _exercise_status():
+    return _load_exercise_state().get("status") or "pending"
+
+
+def _set_exercise_status(status):
+    st = _load_exercise_state()
+    st["status"] = status
+    _save_exercise_state(st)
+
+
+def exercise_checkin_slots_due(now, asked, catchup_min=EXERCISE_CHECKIN_CATCHUP_MIN):
+    """Pure core (testable): check-in slots that have arrived and aren't already asked; each
+    is (slot, hour, should_send), should_send False past the catch-up window."""
+    due = []
+    for hh in EXERCISE_CHECKIN_HOURS:
+        slot = "c%02d" % hh
+        if slot in asked:
+            continue
+        target = now.replace(hour=hh, minute=0, second=0, microsecond=0)
+        if now < target:
+            continue
+        late_min = (now - target).total_seconds() / 60
+        due.append((slot, hh, late_min <= catchup_min))
+    return due
+
+
+def _exercise_checkin_message():
+    logged = False
+    try:
+        act = garmin_coach.latest_activity()
+        if isinstance(act, dict) and "__error__" not in act:
+            logged = str(act.get("start") or "")[:10] == date.today().isoformat()
+    except Exception:  # noqa: BLE001
+        logged = False
+    if logged:
+        return ("\U0001F3CB\uFE0F AgBot check-in \u00B7 nice, I can see you've trained today. "
+                "Reply DWRE when you're fully done and I'll pull your wrap-up - or tell me if "
+                "you're calling it here.")
+    return ("\U0001F3CB\uFE0F AgBot check-in \u00B7 have you done today's recommended exercise "
+            "yet? Reply DWRE when you're done and I'll give you the summary, or say 'rest day' / "
+            "'skip today' if you're not exercising and I'll stop asking.")
+
+
+def maybe_exercise_checkins():
+    own = owner()
+    if not own:
+        return
+    st = _load_exercise_state()
+    if st.get("status") in ("done", "skip"):
+        return  # resolved for today - stop asking
+    now = datetime.now()
+    asked = list(st.get("asked") or [])
+    changed = False
+    for slot, hh, should in exercise_checkin_slots_due(now, asked):
+        if should:
+            log.info("Exercise check-in %s at %s", slot, now.strftime("%H:%M"))
+            send_message(own, _exercise_checkin_message())
+        else:
+            log.info("Exercise check-in %s missed window - skipping", slot)
+        asked.append(slot)
+        changed = True
+    if changed:
+        st["asked"] = asked
+        _save_exercise_state(st)
+
+
 _last_activity_check = 0.0
 
 
@@ -1539,18 +1832,33 @@ def maybe_post_workout():
     if not isinstance(act, dict) or "__error__" in act:
         return
     aid = str(act.get("activity_id") or "")
-    if not aid:
-        return
     seen = read_file(LAST_ACTIVITY_FILE).strip()
-    if aid == seen:
+    pend = _load_pending()
+    # A new activity just appeared: (re)start the quiet timer and WAIT - don't debrief a
+    # single part. A session is several back-to-back activities across different Garmin
+    # types; we send ONE collective debrief once things have been quiet for a while.
+    if aid and aid != seen:
+        write_file(LAST_ACTIVITY_FILE, aid)
+        if not seen:
+            return  # first run - baseline only, don't debrief a historical activity
+        log.info("New activity %s (%s) - queuing collective debrief", aid, act.get("type"))
+        pend["last_ts"] = now
+        _save_pending(pend)
         return
-    write_file(LAST_ACTIVITY_FILE, aid)
-    if not seen:
-        return  # first run - set the baseline, don't debrief historical activities
-    log.info("New activity %s (%s) - sending debrief", aid, act.get("type"))
-    text = generate_debrief(act)
-    if text:
-        send_message(own, text)
+    # No new activity. If a session is pending and it's been quiet long enough, send the one
+    # collective debrief for the whole just-finished block.
+    if pend and (now - float(pend.get("last_ts", 0) or 0) >= DEBRIEF_QUIET_SECS):
+        block = garmin_coach.session_block()
+        if isinstance(block, dict) and "__error__" in block:
+            log.error("session_block error, will retry next poll: %s", block.get("__error__"))
+            return  # keep pending; retry
+        _clear_pending()
+        if block:
+            log.info("Quiet for %dm - collective debrief of %d activities",
+                     DEBRIEF_QUIET_SECS // 60, len(block))
+            text = generate_debrief(block)
+            if text:
+                send_message(own, text)
 
 
 def evaluate_red_flags(snap):
@@ -1642,6 +1950,8 @@ def main():
             maybe_red_flags()
             maybe_post_workout()
             maybe_meal_reminders()
+            maybe_hydration_reminders()
+            maybe_exercise_checkins()
         except Exception as exc:  # noqa: BLE001
             log.error("poll loop error: %s", exc)
             time.sleep(5)
@@ -1685,12 +1995,44 @@ if __name__ == "__main__":
         print(text)
         sys.exit(0)
     if "--selftest-debrief" in sys.argv:
-        act = garmin_coach.latest_activity()
-        print("ACTIVITY:", json.dumps(act, default=str)[:300])
-        text = (generate_debrief(act)
-                if isinstance(act, dict) and "__error__" not in act else None)
+        block = garmin_coach.session_block()
+        print("BLOCK:", json.dumps(block, default=str)[:500])
+        text = (generate_debrief(block)
+                if isinstance(block, list) and block else None)
         print("---- OUTPUT ----")
         print(text)
+        sys.exit(0)
+    if "--selftest-hydration" in sys.argv:
+        _t = date.today().isoformat()
+
+        def _hy(h, m, sent=None):
+            return hydration_slots_due(datetime.now().replace(hour=h, minute=m, second=0,
+                                                               microsecond=0), sent or {}, _t)
+        assert _hy(7, 59) == [], "pre-8am must be empty"
+        _d8 = _hy(8, 0)
+        assert [x[1] for x in _d8] == ["h08"] and _d8[0][3], _d8
+        assert _hy(8, 40)[0][3] is True, "40m late still sends"
+        assert _hy(9, 10)[0][3] is False, "70m late suppressed"
+        assert _hy(8, 30, {"h08": _t}) == [], "already-sent skipped"
+        _all = _hy(22, 0)
+        assert [x[1] for x in _all] == ["h08", "h10", "h12", "h14", "h16", "h18", "h20", "h22"], _all
+        assert [x[1] for x in _all if x[3]] == ["h22"], "only h22 within catch-up"
+        print("HYDRATION_SELFTEST_OK")
+        sys.exit(0)
+    if "--selftest-checkin" in sys.argv:
+        def _ck(h, m, asked=None):
+            return exercise_checkin_slots_due(datetime.now().replace(hour=h, minute=m, second=0,
+                                                                     microsecond=0), asked or [])
+        assert _ck(9, 59) == [], "pre-10am empty"
+        _d10 = _ck(10, 0)
+        assert [x[0] for x in _d10] == ["c10"] and _d10[0][2], _d10
+        assert _ck(10, 40)[0][2] is True, "40m late still asks"
+        assert _ck(11, 10)[0][2] is False, "70m late suppressed"
+        assert _ck(10, 30, ["c10"]) == [], "already-asked skipped"
+        _allc = _ck(21, 0)
+        assert [x[0] for x in _allc] == ["c10", "c12", "c16", "c21"], _allc
+        assert [x[0] for x in _allc if x[2]] == ["c21"], "only c21 within catch-up"
+        print("CHECKIN_SELFTEST_OK")
         sys.exit(0)
     if "--selftest-image" in sys.argv:
         idx = sys.argv.index("--selftest-image")
