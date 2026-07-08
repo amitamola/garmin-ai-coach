@@ -33,11 +33,20 @@ function.
   transcribes any narration, then coaches on the whole thing.
 - **Voice notes** *(optional)* — transcribed locally, then answered.
 - **Food logging & nutrition** — `log: 3 eggs, oats, coffee` (or `log:` as a photo caption)
-  builds a dated food journal that feeds calorie/protein coaching. Optional meal reminders.
+  builds a dated food journal that feeds calorie/protein coaching. Optional meal & hydration
+  reminders.
 - **Injury/illness awareness** — tell it "my knee hurts" and it asks what's going on,
   remembers it, and adapts training (or calls for rest) until you say `recovered`.
-- **Proactive nudges** — auto-sends the brief by ~9:30am if you didn't ask, debriefs you
-  after a workout, and warns you on a rough morning.
+- **Session-aware debrief** — a workout logged as several back-to-back Garmin activities
+  (warm-up + strength + cardio + stretch) is treated as ONE session: ~90 min after your last
+  activity the bot sends a single combined debrief graded against the morning plan, instead of
+  nagging after each part. Reply **DWRE** ("done with recommended exercise") any time to get it
+  immediately.
+- **Exercise check-ins** — a few light nudges through the day (10am / 12 / 4pm / 9pm) asking if
+  you did the recommended exercise; reply **DWRE** when done or `rest day` / `skip today` to
+  stop them for the day.
+- **Proactive nudges** — auto-sends the brief by ~9:30am if you didn't ask, warns you on a
+  rough morning, and (optionally) reminds you to log meals and to drink water every 2h.
 - **Holistic context** — every reply is grounded in your *full* picture: recovery + load +
   what you've eaten/planned + active health flags. Food and training advice reference each
   other.
@@ -208,6 +217,8 @@ listens to your owner chat id.
 | `AgBot week` | 7-day trend review |
 | `AgBot nutrition` (or `macros`, `calories`) | Today's calorie/protein targets |
 | `AgBot performance` (or `vo2`, `race`, `fitness age`) | Fitness stats: VO2max, race predictions, endurance/hill, FTP |
+| `DWRE` (or `done`, `finished`) | Marks today's exercise done + sends the combined session debrief vs the plan |
+| `rest day` (or `skip today`) | Stops the day's exercise check-ins |
 | `AgBot how did I sleep?` (any question) | Context-aware answer |
 | `log: 3 eggs, oats, coffee` | Logs a dated food/journal entry that feeds nutrition coaching |
 | *send a photo* (optional caption) | Analyzes the meal / machine screen / exercise |
@@ -219,8 +230,10 @@ listens to your owner chat id.
 | `/reset` | Clears recent-chat memory |
 | `/help` | Shows the built-in help |
 
-The bot also **auto-sends** your brief by ~9:30am if you didn't ask, **debriefs** you after
-a workout, **warns** you on a rough morning, and (if enabled) **reminds** you to log meals.
+The bot also **auto-sends** your brief by ~9:30am if you didn't ask, sends **one combined
+debrief** ~90 min after your last logged activity (or immediately on `DWRE`), **checks in**
+through the day on whether you did the recommended exercise, **warns** you on a rough morning,
+and (if enabled) **reminds** you to log meals and to drink water.
 
 ---
 
@@ -324,8 +337,9 @@ Everything has a sensible default; override via environment (or `.env`).
 | `GARMINTOKENS` | Where Garmin OAuth tokens are cached (default `~/.garminconnect`) |
 | `COPILOT_EXE` / `COPILOT_HOME` | Only for the default `copilot` backend, if needed |
 
-Tunables (meal-reminder times, auto-brief window, poll timeout, history budgets, etc.)
-live as constants near the top of `telegram_bridge.py`.
+Tunables (meal & hydration reminder times, exercise check-in hours, the ~90-min session
+quiet window before the collective debrief, auto-brief window, poll timeout, history budgets,
+etc.) live as constants near the top of `telegram_bridge.py`.
 
 ---
 

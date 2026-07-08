@@ -501,6 +501,53 @@ def latest_activity():
     return None
 
 
+def _parse_local_epoch(s):
+    """startTimeLocal ('YYYY-MM-DD HH:MM:SS') -> POSIX epoch (naive = local), or None."""
+    try:
+        return datetime.strptime((s or "")[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def session_block(gap_secs=3600, lookback=15):
+    """The trailing cluster of just-finished activities that together form ONE workout
+    session. The user logs each part of a session as a separate Garmin activity (a cardio
+    warm-up, the Strength block, a run, a Pilates/stretch cool-down); this walks the most
+    recent activities backward and groups every activity whose finish is within gap_secs of
+    the next part's start, so a debrief can judge the whole session at once instead of
+    nagging after each part. Returns a newest-last list of trimmed activities, [] if none,
+    or an {'__error__': ...} dict."""
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+    acts = safe(lambda: g.get_activities(0, lookback))
+    if isinstance(acts, dict) and "__error__" in acts:
+        return acts
+    if not isinstance(acts, list) or not acts:
+        return []
+    rows = []
+    for a in acts:
+        t = _trim_activity(a)
+        st = _parse_local_epoch(t.get("start"))
+        if st is None:
+            continue
+        dur = t.get("duration_s")
+        end = st + (dur if isinstance(dur, (int, float)) else 0)
+        rows.append((st, end, t))
+    if not rows:
+        return []
+    rows.sort(key=lambda r: r[0])            # ascending by start time
+    block = [rows[-1]]                        # newest activity anchors the block
+    for i in range(len(rows) - 2, -1, -1):
+        earliest_start = block[0][0]
+        if earliest_start - rows[i][1] <= gap_secs:   # small gap -> same session
+            block.insert(0, rows[i])
+        else:
+            break
+    return [r[2] for r in block]
+
+
 def activity_extras(activity_id):
     """Per-activity enrichment for the post-workout debrief: time-in-HR-zone and,
     for outdoor sessions, the weather at activity time. Weather comes back all-null
