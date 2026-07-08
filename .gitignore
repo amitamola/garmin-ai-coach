@@ -1,0 +1,30 @@
+# Personal profile (copy profile.example.md -> profile.md and edit it)
+profile.md
+
+# Runtime state & secrets (bot token, chat id, journal, conversation, caches, uploads)
+state/
+logs/
+
+# Local secrets
+.env
+*.token
+*_token.txt
+*_chat_id.txt
+
+# Garmin OAuth tokens (in case anyone points GARMINTOKENS at the repo)
+.garminconnect/
+garmin_tokens.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

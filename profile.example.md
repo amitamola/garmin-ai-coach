@@ -1,0 +1,56 @@
+# Athlete Profile — YOUR NAME
+
+_This file personalizes the coach. Copy it to `profile.md` and edit it to describe
+yourself — goals, the equipment you can train with, and any constraints. The bot
+injects this file into every prompt, and you can also ask the bot to update it for
+you ("AgBot: add that I tweaked my knee")._
+
+> Copy this file: `cp profile.example.md profile.md` (Windows: `Copy-Item profile.example.md profile.md`).
+> `profile.md` is git-ignored so your personal details never get committed.
+
+## Goals
+- **Primary:** _e.g. reduce body fat while building lean muscle (body recomposition)._
+- **Secondary:** _e.g. maintain/improve cardio fitness (VO2max)._
+
+## Training availability
+- **N days per week** of intentional training.
+- _Note anything about how you like to structure the week (e.g. often stack two short
+  sessions in a day, prefer mornings, long run on weekends)._
+
+## Equipment / modalities available
+_List everything you can realistically train with — the more specific, the better the
+programming. Delete what doesn't apply, add what does._
+
+**Cardio machines:**
+- _e.g. treadmill, stationary bike, rowing machine, elliptical, stair climber, ski erg_
+
+**Strength:**
+- _e.g. adjustable dumbbells 5–25 kg, barbell + plates, cable machine, pull-up bar,
+  kettlebells, resistance bands_
+
+**Studio / floor:**
+- _e.g. yoga mat, foam roller, bands_
+
+**Outdoor:**
+- _e.g. can run/cycle outdoors anytime_
+
+> Programming note for the coach: _optionally spell out how you want sessions built
+> around your kit — e.g. "max dumbbell is 25 kg so use tempo / unilateral work for legs;
+> use the rower and bike for Zone 2 and intervals."_
+
+## Preferences & style
+- _e.g. enjoy mixing cardio + strength; prefer structured sessions with explicit
+  sets/reps/intervals over vague advice; hate burpees; etc._
+
+## Constraints / injuries
+- _None recorded yet. Add anything ongoing here (e.g. left knee, lower back) and the
+  coach will adapt. The bot also tracks injuries/illness you report in chat._
+
+## Coaching principles (for the bot)
+_Optional — how you want the coach to think. Sensible defaults below; edit to taste._
+- **Adapt to readiness daily:** when training readiness is LOW or HRV is below baseline,
+  prefer Zone 2 cardio, mobility or a lighter day rather than hard intervals.
+- **Protect recovery:** flag short sleep, elevated resting HR, or high ACWR (>1.5) and
+  dial intensity back.
+- Progressive overload for strength; keep nutrition advice sustainable, never crash tactics.
+- Always end a workout suggestion with a one-line safety note (warm up, stop if pain).

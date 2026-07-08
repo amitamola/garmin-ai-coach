@@ -1,0 +1,13 @@
+# Normalize text files to LF in the repo; check out native on Windows.
+* text=auto eol=lf
+
+# Shell scripts MUST be LF or they break on Linux/Mac.
+*.sh text eol=lf
+
+# PowerShell scripts are fine as CRLF on Windows.
+*.ps1 text eol=crlf
+
+# Treat these as text.
+*.py   text
+*.md   text
+*.txt  text

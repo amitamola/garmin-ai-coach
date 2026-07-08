@@ -1,0 +1,875 @@
+"""Garmin Coach data layer.
+
+Reads OAuth tokens from ~/.garminconnect (created by garmin-mcp-auth) and provides:
+  * should-brief      -> decide whether this morning's brief should be sent yet
+  * mark-brief-sent   -> record that today's brief was delivered
+  * dump [date]       -> print a rich consolidated JSON snapshot for the LLM
+
+Runs in an ephemeral `uv run --with garminconnect` env, so nothing pollutes the
+base conda install. All network calls are defensive: one failing endpoint never
+breaks the whole snapshot.
+
+Exit codes for `should-brief`:
+  0 = SEND        (sleep for today is logged and not yet sent)
+  2 = ALREADY_SENT
+  3 = WAITING     (no finalized sleep record yet)
+  4 = ERROR
+"""
+import os
+import sys
+import json
+import argparse
+from datetime import date, timedelta, datetime
+
+from garminconnect import Garmin
+
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
+BRIEF_STATE = os.path.join(STATE_DIR, "last_brief_date.txt")
+SETS_CACHE = os.path.join(STATE_DIR, "exercise_sets_cache.json")
+# A night is considered "logged" once at least this much sleep is recorded.
+MIN_SLEEP_SECONDS = 90 * 60
+
+
+def token_dir():
+    return os.path.expanduser(os.environ.get("GARMINTOKENS", "~/.garminconnect"))
+
+
+def client():
+    g = Garmin()
+    g.login(token_dir())
+    return g
+
+
+def iso(d):
+    return d.isoformat()
+
+
+def safe(fn):
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"{type(exc).__name__}: {exc}"}
+
+
+def sleep_dto(g, d):
+    data = safe(lambda: g.get_sleep_data(iso(d)))
+    if not isinstance(data, dict) or "__error__" in data:
+        return None, data
+    return (data.get("dailySleepDTO") or {}), data
+
+
+def is_sleep_logged(g, d):
+    dto, _ = sleep_dto(g, d)
+    if not dto:
+        return False
+    secs = dto.get("sleepTimeSeconds")
+    return bool(secs) and secs >= MIN_SLEEP_SECONDS
+
+
+# ---------------------------------------------------------------- should-brief
+def cmd_should_brief(args):
+    today = date.today()
+    already = ""
+    if os.path.exists(BRIEF_STATE):
+        with open(BRIEF_STATE, "r", encoding="utf-8") as fh:
+            already = fh.read().strip()
+    if already == iso(today):
+        print("ALREADY_SENT")
+        return 2
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        print(f"ERROR: login failed: {exc}")
+        return 4
+    if is_sleep_logged(g, today):
+        print("SEND")
+        return 0
+    print("WAITING")
+    return 3
+
+
+def cmd_mark_sent(args):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(BRIEF_STATE, "w", encoding="utf-8") as fh:
+        fh.write(iso(date.today()))
+    print(f"marked {iso(date.today())}")
+    return 0
+
+
+# ------------------------------------------------------------------------ dump
+def _trim_activity(a):
+    return {
+        "activity_id": a.get("activityId"),
+        "name": a.get("activityName"),
+        "type": (a.get("activityType") or {}).get("typeKey"),
+        "start": a.get("startTimeLocal"),
+        "duration_s": a.get("duration"),
+        "distance_m": a.get("distance"),
+        "avg_hr": a.get("averageHR"),
+        "max_hr": a.get("maxHR"),
+        "calories": a.get("calories"),
+        "training_load": a.get("activityTrainingLoad"),
+        "aerobic_te": a.get("aerobicTrainingEffect"),
+        "anaerobic_te": a.get("anaerobicTrainingEffect"),
+        "avg_power": a.get("avgPower"),
+    }
+
+
+def _count_breathing_disruptions(sleep_raw):
+    """Count real breathing-disruption events during sleep. Garmin uses 255 as a
+    'no reading' sentinel (shows as '--' in Connect), so those are ignored."""
+    data = (sleep_raw or {}).get("breathingDisruptionData")
+    if not isinstance(data, list):
+        return None
+    return sum(1 for e in data
+               if isinstance(e, dict)
+               and isinstance(e.get("value"), (int, float))
+               and 0 < e["value"] < 255)
+
+
+def build_snapshot(d_today=None):
+    if d_today is None:
+        d_today = date.today()
+    elif isinstance(d_today, str):
+        d_today = date.fromisoformat(d_today)
+    d_yest = d_today - timedelta(days=1)
+    week_start = d_today - timedelta(days=7)
+
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+
+    try:
+        full_name = g.get_full_name()
+    except Exception:
+        full_name = None
+
+    dto_today, sleep_raw = sleep_dto(g, d_today)
+    sleep = None
+    if dto_today:
+        scores = dto_today.get("sleepScores") or {}
+        overall = scores.get("overall") or {} if isinstance(scores, dict) else {}
+        sleep = {
+            "date": iso(d_today),
+            "score": overall.get("value"),
+            "quality": overall.get("qualifierKey"),
+            "time_asleep_s": dto_today.get("sleepTimeSeconds"),
+            "deep_s": dto_today.get("deepSleepSeconds"),
+            "light_s": dto_today.get("lightSleepSeconds"),
+            "rem_s": dto_today.get("remSleepSeconds"),
+            "awake_s": dto_today.get("awakeSleepSeconds"),
+            "resting_hr": (sleep_raw or {}).get("restingHeartRate"),
+            "avg_overnight_hrv": (sleep_raw or {}).get("avgOvernightHrv"),
+            "body_battery_change": (sleep_raw or {}).get("bodyBatteryChange"),
+            "avg_spo2": dto_today.get("averageSpO2Value"),
+            "lowest_spo2": dto_today.get("lowestSpO2Value"),
+            "avg_respiration": dto_today.get("averageRespirationValue"),
+            "restless_moments": (sleep_raw or {}).get("restlessMomentsCount"),
+            "breathing_disruptions": _count_breathing_disruptions(sleep_raw),
+            "skin_temp_deviation_c": (sleep_raw or {}).get("avgSkinTempDeviationC"),
+            "skin_temp_deviation_f": (sleep_raw or {}).get("avgSkinTempDeviationF"),
+            "skin_temp_calibration_days": (sleep_raw or {}).get("skinTempCalibrationDays"),
+            "score_feedback": (dto_today.get("sleepScores") or {}).get("overall", {}).get("qualifierKey")
+            if isinstance(dto_today.get("sleepScores"), dict) else None,
+        }
+
+    def day_stats(d):
+        s = safe(lambda: g.get_stats(iso(d)))
+        if not isinstance(s, dict) or "__error__" in s:
+            return {"__error__": s.get("__error__") if isinstance(s, dict) else str(s)}
+        return {
+            "date": iso(d),
+            "total_steps": s.get("totalSteps"),
+            "step_goal": s.get("dailyStepGoal"),
+            "distance_m": s.get("totalDistanceMeters"),
+            "active_kcal": s.get("activeKilocalories"),
+            "total_kcal": s.get("totalKilocalories"),
+            "bmr_kcal": s.get("bmrKilocalories"),
+            "net_kcal_remaining": (s.get("remainingKilocalories")
+                                   if s.get("includesCalorieConsumedData") else None),
+            "resting_hr": s.get("restingHeartRate"),
+            "min_hr": s.get("minHeartRate"),
+            "max_hr": s.get("maxHeartRate"),
+            "avg_stress": s.get("averageStressLevel"),
+            "max_stress": s.get("maxStressLevel"),
+            "body_battery_high": s.get("bodyBatteryHighestValue"),
+            "body_battery_low": s.get("bodyBatteryLowestValue"),
+            "body_battery_most_recent": s.get("bodyBatteryMostRecentValue"),
+            "moderate_intensity_min": s.get("moderateIntensityMinutes"),
+            "vigorous_intensity_min": s.get("vigorousIntensityMinutes"),
+            "floors_up": s.get("floorsAscended"),
+            "avg_spo2": s.get("averageSpo2"),
+        }
+
+    readiness = safe(lambda: g.get_training_readiness(iso(d_today)))
+    if isinstance(readiness, list) and readiness:
+        r0 = readiness[0]
+        rt_min = r0.get("recoveryTime")  # Garmin reports recovery time in MINUTES
+        readiness = {
+            "score": r0.get("score"),
+            "level": r0.get("level"),
+            "feedback": r0.get("feedbackShort"),
+            "feedback_long": r0.get("feedbackLong"),
+            "recovery_time_min": rt_min,
+            "recovery_time_h": round(rt_min / 60, 1) if isinstance(rt_min, (int, float)) else None,
+            "recovery_change": r0.get("recoveryTimeChangePhrase"),
+            "sleep_score_factor": r0.get("sleepScoreFactorPercent"),
+            "recovery_time_factor": r0.get("recoveryTimeFactorPercent"),
+            "hrv_factor": r0.get("hrvFactorPercent"),
+            "acwr_factor": r0.get("acwrFactorPercent"),
+            "stress_history_factor": r0.get("stressHistoryFactorPercent"),
+            "sleep_history_factor": r0.get("sleepHistoryFactorPercent"),
+            "acute_load": r0.get("acuteLoad"),
+        }
+
+    # Wake-time ("this morning") readiness snapshot - cleaner for the 09:30 brief
+    # than the current-moment readiness above, which decays through the day.
+    morning = safe(lambda: g.get_morning_training_readiness(iso(d_today)))
+    morning_readiness = None
+    if isinstance(morning, dict) and "__error__" not in morning:
+        morning_readiness = {
+            "score": morning.get("score"),
+            "level": morning.get("level"),
+            "feedback": morning.get("feedbackShort"),
+            "measured_at_local": morning.get("timestampLocal"),
+            "sleep_score": morning.get("sleepScore"),
+            "hrv_weekly_avg": morning.get("hrvWeeklyAverage"),
+            "input_context": morning.get("inputContext"),
+        }
+
+    hrv = safe(lambda: g.get_hrv_data(iso(d_today)))
+    if isinstance(hrv, dict) and "__error__" not in hrv:
+        summ = hrv.get("hrvSummary") or {}
+        hrv = {
+            "last_night_avg": summ.get("lastNightAvg"),
+            "last_night_5min_high": summ.get("lastNight5MinHigh"),
+            "weekly_avg": summ.get("weeklyAvg"),
+            "status": summ.get("status"),
+            "baseline_low_upper": (summ.get("baseline") or {}).get("lowUpper"),
+            "baseline_balanced_low": (summ.get("baseline") or {}).get("balancedLow"),
+            "baseline_balanced_upper": (summ.get("baseline") or {}).get("balancedUpper"),
+        }
+
+    status = safe(lambda: g.get_training_status(iso(d_today)))
+    train_status = None
+    if isinstance(status, dict) and "__error__" not in status:
+        most_recent = status.get("mostRecentTrainingStatus") or {}
+        latest = None
+        map_ = most_recent.get("latestTrainingStatusData") or {}
+        if isinstance(map_, dict):
+            for _k, v in map_.items():
+                latest = v
+                break
+        vo2 = status.get("mostRecentVO2Max") or {}
+        generic = (vo2.get("generic") or {}) if isinstance(vo2, dict) else {}
+        acute_dto = (latest or {}).get("acuteTrainingLoadDTO") or {}
+        train_status = {
+            "training_status": (latest or {}).get("trainingStatus"),
+            "training_status_key": (latest or {}).get("trainingStatusFeedbackPhrase"),
+            "acwr": acute_dto.get("dailyAcuteChronicWorkloadRatio"),
+            "acwr_status": acute_dto.get("acwrStatus"),
+            "acute_load": acute_dto.get("dailyTrainingLoadAcute"),
+            "chronic_load": acute_dto.get("dailyTrainingLoadChronic"),
+            "load_trend": (latest or {}).get("loadLevelTrend"),
+            "fitness_trend": (latest or {}).get("fitnessTrend"),
+            "vo2max": generic.get("vo2MaxValue"),
+            "vo2max_date": generic.get("calendarDate"),
+        }
+        # Load Focus: 4-week aerobic-low / aerobic-high / anaerobic load split vs
+        # Garmin's target ranges, plus its balance verdict (e.g. AEROBIC_LOW_FOCUS).
+        lb_map = ((status.get("mostRecentTrainingLoadBalance") or {})
+                  .get("metricsTrainingLoadBalanceDTOMap") or {})
+        lb = next(iter(lb_map.values()), {}) if isinstance(lb_map, dict) else {}
+        if lb:
+            def _r(x):
+                return round(x) if isinstance(x, (int, float)) else None
+            train_status["load_focus"] = {
+                "aerobic_low": _r(lb.get("monthlyLoadAerobicLow")),
+                "aerobic_high": _r(lb.get("monthlyLoadAerobicHigh")),
+                "anaerobic": _r(lb.get("monthlyLoadAnaerobic")),
+                "aerobic_low_target": [lb.get("monthlyLoadAerobicLowTargetMin"),
+                                       lb.get("monthlyLoadAerobicLowTargetMax")],
+                "aerobic_high_target": [lb.get("monthlyLoadAerobicHighTargetMin"),
+                                        lb.get("monthlyLoadAerobicHighTargetMax")],
+                "anaerobic_target": [lb.get("monthlyLoadAnaerobicTargetMin"),
+                                     lb.get("monthlyLoadAnaerobicTargetMax")],
+                "feedback": lb.get("trainingBalanceFeedbackPhrase"),
+            }
+
+    activities = safe(lambda: g.get_activities_by_date(iso(week_start), iso(d_today)))
+    if isinstance(activities, list):
+        activities = [_trim_activity(a) for a in activities[:15]]
+        # Attach logged sets/reps/weights to the most recent strength sessions so
+        # workout recommendations can see muscle groups trained and avoid stacking.
+        # Sets are immutable once logged -> cached by activity_id (near-zero cost).
+        cache = _load_sets_cache()
+        changed = False
+        n_strength = 0
+        for a in activities:
+            if n_strength >= 3:
+                break
+            if a.get("type") and "strength" in a["type"] and a.get("activity_id") is not None:
+                had = str(a["activity_id"]) in cache
+                logged = _sets_for(g, a["activity_id"], cache)
+                changed = changed or not had
+                if logged:
+                    a["logged_sets"] = logged
+                n_strength += 1
+        if changed:
+            _save_sets_cache(cache)
+
+    body_battery = safe(lambda: g.get_body_battery(iso(d_yest), iso(d_today)))
+    bb = None
+    if isinstance(body_battery, list):
+        bb = []
+        for entry in body_battery:
+            bb.append({
+                "date": entry.get("date"),
+                "charged": entry.get("charged"),
+                "drained": entry.get("drained"),
+                "highest": entry.get("bodyBatteryStatList", [{}])[0].get("statsValue")
+                if entry.get("bodyBatteryStatList") else None,
+            })
+
+    # Latest synced body-battery sample from today's series (value + timestamp), used only
+    # for the "as of" freshness stamp. The reported current value prefers Garmin's canonical
+    # bodyBatteryMostRecentValue scalar (see below) - the exact number the Connect app/web show.
+    bb_series_val = None
+    bb_series_ts = None
+    if isinstance(body_battery, list) and body_battery:
+        arr = body_battery[-1].get("bodyBatteryValuesArray") or []
+        for point in reversed(arr):
+            if (isinstance(point, list) and len(point) >= 2
+                    and isinstance(point[1], (int, float))):
+                bb_series_val = point[1]
+                bb_series_ts = point[0]
+                break
+
+    weight = safe(lambda: g.get_body_composition(iso(d_today - timedelta(days=30)), iso(d_today)))
+    latest_weight = None
+    if isinstance(weight, dict):
+        dwl = weight.get("dateWeightList") or []
+        if dwl:
+            # Garmin returns dateWeightList newest-first; pick the most recent by date
+            # explicitly rather than trusting order, so we never report a stale weigh-in.
+            last = max(dwl, key=lambda e: e.get("calendarDate") or "")
+            latest_weight = {
+                "date": last.get("calendarDate"),
+                "weight_g": last.get("weight"),
+                "bmi": last.get("bmi"),
+                "body_fat_pct": last.get("bodyFat"),
+                "muscle_mass_g": last.get("muscleMass"),
+            }
+
+    # ---- Whole-day wellness (get_user_summary is Garmin's richest single call) ----
+    usumm = safe(lambda: g.get_user_summary(iso(d_today)))
+    resp = safe(lambda: g.get_respiration_data(iso(d_today)))
+    hydr = safe(lambda: g.get_hydration_data(iso(d_today)))
+    wellness = None
+    last_sync_gmt = None
+    last_sync_age_min = None
+    if isinstance(usumm, dict) and "__error__" not in usumm:
+        def _h(sec):
+            return round(sec / 3600, 1) if isinstance(sec, (int, float)) else None
+
+        def _m(sec):
+            return round(sec / 60) if isinstance(sec, (int, float)) else None
+
+        wellness = {
+            "sedentary_h": _h(usumm.get("sedentarySeconds")),
+            "active_h": _h(usumm.get("activeSeconds")),
+            "highly_active_h": _h(usumm.get("highlyActiveSeconds")),
+            "sleeping_h": _h(usumm.get("sleepingSeconds")),
+            "stress_qualifier": usumm.get("stressQualifier"),
+            "avg_stress": usumm.get("averageStressLevel"),
+            "rest_stress_min": _m(usumm.get("restStressDuration")),
+            "low_stress_min": _m(usumm.get("lowStressDuration")),
+            "medium_stress_min": _m(usumm.get("mediumStressDuration")),
+            "high_stress_min": _m(usumm.get("highStressDuration")),
+            "activity_stress_min": _m(usumm.get("activityStressDuration")),
+            "rhr_today": usumm.get("restingHeartRate"),
+            "rhr_7d_avg": usumm.get("lastSevenDaysAvgRestingHeartRate"),
+            "body_battery_charged": usumm.get("bodyBatteryChargedValue"),
+            "body_battery_drained": usumm.get("bodyBatteryDrainedValue"),
+            "body_battery_during_sleep": usumm.get("bodyBatteryDuringSleep"),
+            "body_battery_at_wake": usumm.get("bodyBatteryAtWakeTime"),
+            "abnormal_hr_alerts": usumm.get("abnormalHeartRateAlertsCount"),
+            "remaining_kcal": (round(usumm.get("remainingKilocalories"))
+                               if isinstance(usumm.get("remainingKilocalories"), (int, float)) else None),
+            "net_calorie_goal": usumm.get("netCalorieGoal"),
+        }
+        if isinstance(resp, dict) and "__error__" not in resp:
+            wellness["respiration_sleep_avg"] = resp.get("avgSleepRespirationValue")
+            wellness["respiration_waking_avg"] = resp.get("avgWakingRespirationValue")
+            wellness["respiration_high"] = resp.get("highestRespirationValue")
+            wellness["respiration_low"] = resp.get("lowestRespirationValue")
+        if isinstance(hydr, dict) and "__error__" not in hydr:
+            wellness["sweat_loss_ml"] = hydr.get("sweatLossInML")
+            wellness["hydration_logged_ml"] = hydr.get("valueInML")
+            wellness["hydration_goal_ml"] = (round(hydr.get("goalInML"))
+                                             if isinstance(hydr.get("goalInML"), (int, float)) else None)
+        sync = usumm.get("lastSyncTimestampGMT")
+        if sync:
+            try:
+                _st = datetime.fromisoformat(sync.replace("Z", ""))
+                last_sync_gmt = _st.isoformat(timespec="minutes")
+                last_sync_age_min = round((datetime.utcnow() - _st).total_seconds() / 60)
+            except Exception:  # noqa: BLE001
+                last_sync_gmt = sync[:16]
+
+    # Whole-day strain from YESTERDAY (a completed day) - the morning brief's "how hard
+    # was yesterday" read. today's wellness_today counters are still accumulating in the AM.
+    ysumm = safe(lambda: g.get_user_summary(iso(d_yest)))
+    strain_yesterday = None
+    if isinstance(ysumm, dict) and "__error__" not in ysumm:
+        strain_yesterday = {
+            "sedentary_h": (round(ysumm.get("sedentarySeconds") / 3600, 1)
+                            if isinstance(ysumm.get("sedentarySeconds"), (int, float)) else None),
+            "active_h": (round(ysumm.get("activeSeconds") / 3600, 1)
+                         if isinstance(ysumm.get("activeSeconds"), (int, float)) else None),
+            "highly_active_h": (round(ysumm.get("highlyActiveSeconds") / 3600, 1)
+                                if isinstance(ysumm.get("highlyActiveSeconds"), (int, float)) else None),
+            "avg_stress": ysumm.get("averageStressLevel"),
+            "stress_qualifier": ysumm.get("stressQualifier"),
+            "high_stress_min": (round(ysumm.get("highStressDuration") / 60)
+                                if isinstance(ysumm.get("highStressDuration"), (int, float)) else None),
+            "rest_stress_min": (round(ysumm.get("restStressDuration") / 60)
+                                if isinstance(ysumm.get("restStressDuration"), (int, float)) else None),
+        }
+
+    today_stats = day_stats(d_today)
+    # Prefer Garmin's canonical "most recent" scalar (identical to what the Connect app/web
+    # display); fall back to the latest series sample only if the scalar is unavailable.
+    bb_current = None
+    if isinstance(today_stats, dict):
+        bb_current = today_stats.get("body_battery_most_recent")
+    if bb_current is None:
+        bb_current = bb_series_val
+    bb_current_as_of = None
+    bb_current_age_min = None
+    if bb_series_ts:
+        _bb_ts = datetime.fromtimestamp(bb_series_ts / 1000)
+        bb_current_as_of = _bb_ts.isoformat(timespec="minutes")
+        bb_current_age_min = round((datetime.now() - _bb_ts).total_seconds() / 60)
+
+    snapshot = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "athlete": full_name,
+        "sleep_date": iso(d_today),
+        "activity_date": iso(d_yest),
+        "last_night_sleep": sleep,
+        "yesterday_full_day": day_stats(d_yest),
+        "today_so_far": today_stats,
+        "training_readiness": readiness,
+        "morning_readiness": morning_readiness,
+        "hrv": hrv,
+        "training_status": train_status,
+        "recent_activities_7d": activities,
+        "wellness_today": wellness,
+        "strain_yesterday": strain_yesterday,
+        "body_battery_current": bb_current,
+        "body_battery_current_as_of": bb_current_as_of,
+        "body_battery_current_age_min": bb_current_age_min,
+        "body_battery_2d": bb,
+        "latest_weigh_in_30d": latest_weight,
+        "last_sync_gmt": last_sync_gmt,
+        "last_sync_age_min": last_sync_age_min,
+    }
+    return snapshot
+
+
+def latest_activity():
+    """Cheapest possible fetch of the single most recent activity (for the
+    proactive post-workout debrief). Returns a trimmed dict, None, or an error."""
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+    acts = safe(lambda: g.get_activities(0, 1))
+    if isinstance(acts, list) and acts:
+        return _trim_activity(acts[0])
+    if isinstance(acts, dict) and "__error__" in acts:
+        return acts
+    return None
+
+
+def activity_extras(activity_id):
+    """Per-activity enrichment for the post-workout debrief: time-in-HR-zone and,
+    for outdoor sessions, the weather at activity time. Weather comes back all-null
+    for indoor activities (temp is None) and is skipped."""
+    if activity_id is None:
+        return {}
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+    out = {}
+    hz = safe(lambda: g.get_activity_hr_in_timezones(activity_id))
+    if isinstance(hz, list):
+        zones = []
+        for z in hz:
+            secs = z.get("secsInZone")
+            zones.append({
+                "zone": z.get("zoneNumber"),
+                "min": round(secs / 60, 1) if isinstance(secs, (int, float)) else None,
+                "low_bpm": z.get("zoneLowBoundary"),
+            })
+        if any(zn["min"] for zn in zones):
+            out["hr_time_in_zones"] = zones
+    wx = safe(lambda: g.get_activity_weather(activity_id))
+    if isinstance(wx, dict) and wx.get("temp") is not None:
+        wtype = wx.get("weatherTypeDTO") or {}
+        out["weather"] = {
+            "temp_f": wx.get("temp"),
+            "feels_like_f": wx.get("apparentTemp"),
+            "humidity_pct": wx.get("relativeHumidity"),
+            "wind_mph": wx.get("windSpeed"),
+            "wind_dir": wx.get("windDirectionCompassPoint"),
+            "conditions": wtype.get("desc") if isinstance(wtype, dict) else None,
+        }
+    return out
+
+
+def build_weekly(days=7, d_today=None):
+    """Per-day trends over the last `days` days plus weight series, the week's
+    activities and latest training status. Heavier than build_snapshot, on demand."""
+    if d_today is None:
+        d_today = date.today()
+    elif isinstance(d_today, str):
+        d_today = date.fromisoformat(d_today)
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+    start = d_today - timedelta(days=days)
+    out = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "range": iso(start) + " .. " + iso(d_today),
+        "days": [],
+    }
+    for i in range(days, 0, -1):
+        d = d_today - timedelta(days=i)
+        s = safe(lambda d=d: g.get_stats(iso(d)))
+        s = s if isinstance(s, dict) and "__error__" not in s else {}
+        dto, _raw = sleep_dto(g, d)
+        sc = (dto.get("sleepScores") or {}) if dto else {}
+        overall = (sc.get("overall") or {}) if isinstance(sc, dict) else {}
+        secs = dto.get("sleepTimeSeconds") if dto else None
+        out["days"].append({
+            "date": iso(d),
+            "sleep_h": round(secs / 3600, 1) if secs else None,
+            "sleep_score": overall.get("value"),
+            "resting_hr": s.get("restingHeartRate"),
+            "steps": s.get("totalSteps"),
+            "active_kcal": s.get("activeKilocalories"),
+            "body_battery_high": s.get("bodyBatteryHighestValue"),
+            "body_battery_low": s.get("bodyBatteryLowestValue"),
+            "avg_stress": s.get("averageStressLevel"),
+        })
+    weight = safe(lambda: g.get_body_composition(iso(start), iso(d_today)))
+    wseries = []
+    if isinstance(weight, dict):
+        for w in sorted((weight.get("dateWeightList") or []),
+                        key=lambda e: e.get("calendarDate") or ""):
+            wseries.append({
+                "date": w.get("calendarDate"),
+                "weight_g": w.get("weight"),
+                "body_fat_pct": w.get("bodyFat"),
+            })
+    out["weight_series"] = wseries
+    acts = safe(lambda: g.get_activities_by_date(iso(start), iso(d_today)))
+    if isinstance(acts, list):
+        out["activities"] = [_trim_activity(a) for a in acts[:25]]
+    status = safe(lambda: g.get_training_status(iso(d_today)))
+    if isinstance(status, dict) and "__error__" not in status:
+        mr = status.get("mostRecentTrainingStatus") or {}
+        mp = mr.get("latestTrainingStatusData") or {}
+        latest = None
+        if isinstance(mp, dict):
+            for _k, v in mp.items():
+                latest = v
+                break
+        vo2 = status.get("mostRecentVO2Max") or {}
+        generic = (vo2.get("generic") or {}) if isinstance(vo2, dict) else {}
+        out["training_status"] = {
+            "status": (latest or {}).get("trainingStatus"),
+            "acute_load": (latest or {}).get("acwrPercent")
+            or (latest or {}).get("acuteTrainingLoadDTO"),
+            "vo2max": generic.get("vo2MaxValue"),
+        }
+    return out
+
+
+def _fmt_secs(s):
+    """Seconds -> 'h:mm:ss' or 'm:ss' (for race-prediction times)."""
+    if not isinstance(s, (int, float)) or s <= 0:
+        return None
+    s = int(round(s))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+# Garmin personal-record typeId -> (label, value-kind). kind drives formatting:
+# 'time' = seconds, 'dist' = metres, 'count' = raw number.
+_PR_TYPES = {
+    1: ("Fastest 1 km", "time"),
+    2: ("Fastest 1 mile", "time"),
+    3: ("Fastest 5 km", "time"),
+    4: ("Fastest 10 km", "time"),
+    5: ("Fastest Half Marathon", "time"),
+    6: ("Fastest Marathon", "time"),
+    7: ("Longest Run", "dist"),
+    8: ("Longest Ride", "dist"),
+    9: ("Longest e-Bike Ride", "dist"),
+    10: ("Best Avg Power", "count"),
+    11: ("Most Ascent (Ride)", "dist"),
+    12: ("Most Steps in a Day", "count"),
+    13: ("Most Steps in a Week", "count"),
+    14: ("Most Steps in a Month", "count"),
+    15: ("Longest Goal Streak (days)", "count"),
+    16: ("Longest Activity Streak (days)", "count"),
+}
+
+
+def _format_prs(pr_list):
+    """Turn Garmin's raw personal-record list into labelled, human-readable records."""
+    out = []
+    for p in pr_list:
+        if not isinstance(p, dict):
+            continue
+        tid = p.get("typeId")
+        val = p.get("value")
+        label, kind = _PR_TYPES.get(tid, (f"Record #{tid}", "count"))
+        pretty = val
+        if isinstance(val, (int, float)):
+            if kind == "time":
+                pretty = _fmt_secs(val)
+            elif kind == "dist":
+                pretty = f"{val / 1000:.2f} km"
+            else:
+                pretty = int(round(val))
+        out.append({
+            "record": label,
+            "value": pretty,
+            "date": (p.get("prStartTimeGmtFormatted") or "")[:10] or None,
+        })
+    return out
+
+
+def fitness_profile(d_today=None):
+    """Slow-changing performance metrics the Epix Pro computes but the daily
+    snapshot skips: fitness age, race predictions, endurance & hill score,
+    VO2max, lactate-threshold HR, cycling FTP, weekly intensity minutes.
+    Meant to be cached ~daily by the bot, not fetched on every message."""
+    if d_today is None:
+        d_today = date.today()
+    elif isinstance(d_today, str):
+        d_today = date.fromisoformat(d_today)
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+    today = iso(d_today)
+    week = iso(d_today - timedelta(days=7))
+    prof = {"generated_at": datetime.now().isoformat(timespec="seconds")}
+
+    fa = safe(lambda: g.get_fitnessage_data(today))
+    if isinstance(fa, dict) and "__error__" not in fa:
+        f_age = fa.get("fitnessAge")
+        ach = fa.get("achievableFitnessAge")
+        prof["fitness_age"] = {
+            "chronological": fa.get("chronologicalAge"),
+            "fitness_age": round(f_age, 1) if isinstance(f_age, (int, float)) else None,
+            "achievable": round(ach, 1) if isinstance(ach, (int, float)) else None,
+        }
+
+    rp = safe(lambda: g.get_race_predictions())
+    if isinstance(rp, dict) and "__error__" not in rp:
+        prof["race_predictions"] = {
+            "5K": _fmt_secs(rp.get("time5K")),
+            "10K": _fmt_secs(rp.get("time10K")),
+            "half_marathon": _fmt_secs(rp.get("timeHalfMarathon")),
+            "marathon": _fmt_secs(rp.get("timeMarathon")),
+        }
+
+    es = safe(lambda: g.get_endurance_score(week, today))
+    dto = (es.get("enduranceScoreDTO") or {}) if isinstance(es, dict) else {}
+    if dto:
+        score = dto.get("overallScore")
+        # Classification thresholds come back with the payload; label by the
+        # highest band the score clears (below Intermediate == Novice).
+        bands = [
+            (dto.get("classificationLowerLimitIntermediate"), "Intermediate"),
+            (dto.get("classificationLowerLimitTrained"), "Trained"),
+            (dto.get("classificationLowerLimitWellTrained"), "Well Trained"),
+            (dto.get("classificationLowerLimitExpert"), "Expert"),
+            (dto.get("classificationLowerLimitSuperior"), "Superior"),
+            (dto.get("classificationLowerLimitElite"), "Elite"),
+        ]
+        label = "Novice"
+        for lim, name in bands:
+            if isinstance(lim, (int, float)) and isinstance(score, (int, float)) and score >= lim:
+                label = name
+        prof["endurance_score"] = {"score": score, "level": label}
+
+    hs = safe(lambda: g.get_hill_score(week, today))
+    hlist = (hs.get("hillScoreDTOList") or []) if isinstance(hs, dict) else []
+    if hlist:
+        last = hlist[-1]
+        prof["hill_score"] = {
+            "score": last.get("overallScore"),
+            "strength": last.get("strengthScore"),
+            "endurance": last.get("enduranceScore"),
+        }
+
+    lt = safe(lambda: g.get_lactate_threshold())
+    shr = (lt.get("speed_and_heart_rate") or {}) if isinstance(lt, dict) else {}
+    if shr.get("heartRate"):
+        prof["lactate_threshold_hr"] = shr.get("heartRate")
+
+    ftp = safe(lambda: g.get_cycling_ftp())
+    if isinstance(ftp, dict) and ftp.get("functionalThresholdPower"):
+        prof["cycling_ftp"] = {
+            "watts": ftp.get("functionalThresholdPower"),
+            "stale": ftp.get("isStale"),
+            "as_of": (ftp.get("calendarDate") or "")[:10],
+        }
+
+    im = safe(lambda: g.get_intensity_minutes_data(today))
+    if isinstance(im, dict) and "__error__" not in im:
+        prof["weekly_intensity_minutes"] = {
+            "total": im.get("weeklyTotal"),
+            "goal": im.get("weekGoal"),
+            "moderate": im.get("weeklyModerate"),
+            "vigorous": im.get("weeklyVigorous"),
+            "goal_met_on": im.get("dayOfGoalMet") or None,
+        }
+
+    pr = safe(lambda: g.get_personal_record())
+    if isinstance(pr, list) and pr:
+        prof["personal_records"] = _format_prs(pr)
+    return prof
+
+
+def _parse_exercise_sets(xs):
+    """Aggregate a raw exerciseSets payload into a compact per-exercise summary."""
+    if not isinstance(xs, dict):
+        return None
+    sets = xs.get("exerciseSets") or []
+    agg, order = {}, []
+    for s in sets:
+        if s.get("setType") != "ACTIVE":
+            continue
+        exs = s.get("exercises") or []
+        name = (exs[0].get("category") if exs else None) or "UNKNOWN"
+        if name not in agg:
+            agg[name] = {"sets": 0, "reps": [], "top_kg": None}
+            order.append(name)
+        a = agg[name]
+        a["sets"] += 1
+        reps = s.get("repetitionCount")
+        if isinstance(reps, (int, float)):
+            a["reps"].append(int(reps))
+        wt = s.get("weight")  # grams
+        if isinstance(wt, (int, float)) and wt > 0:
+            kg = round(wt / 1000, 1)
+            a["top_kg"] = kg if a["top_kg"] is None else max(a["top_kg"], kg)
+    out = []
+    for name in order:
+        a = agg[name]
+        reps = a["reps"]
+        out.append({
+            "exercise": name.replace("_", " ").title(),
+            "sets": a["sets"],
+            "reps": (f"{min(reps)}-{max(reps)}" if reps and min(reps) != max(reps)
+                     else (str(reps[0]) if reps else None)),
+            "top_weight_kg": a["top_kg"],
+        })
+    return out or None
+
+
+def _load_sets_cache():
+    try:
+        with open(SETS_CACHE, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_sets_cache(cache):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(SETS_CACHE, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _sets_for(g, activity_id, cache=None):
+    """Logged sets for one activity, using an immutable-by-id cache when given."""
+    key = str(activity_id)
+    if cache is not None and key in cache:
+        return cache[key]
+    xs = safe(lambda: g.get_activity_exercise_sets(activity_id))
+    parsed = _parse_exercise_sets(xs) if isinstance(xs, dict) and "__error__" not in xs else None
+    if cache is not None:
+        cache[key] = parsed  # cache misses (None) too, so we never refetch
+    return parsed
+
+
+def exercise_sets(activity_id):
+    """Per-exercise set summary for a strength activity (exercise, #sets, rep
+    range, top weight in kg). None when the activity logs no sets."""
+    try:
+        g = client()
+    except Exception as exc:  # noqa: BLE001
+        return {"__error__": f"login failed: {exc}"}
+    return _sets_for(g, activity_id)
+
+
+def cmd_dump(args):
+    snap = build_snapshot(args.date)
+    print(json.dumps(snap, indent=2, default=str))
+    return 4 if isinstance(snap, dict) and "__error__" in snap else 0
+
+
+def cmd_fitness(args):
+    prof = fitness_profile(args.date)
+    print(json.dumps(prof, indent=2, default=str))
+    return 4 if isinstance(prof, dict) and "__error__" in prof else 0
+
+
+def cmd_sets(args):
+    print(json.dumps(exercise_sets(args.activity_id), indent=2, default=str))
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(description="Garmin Coach data layer")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("should-brief")
+    sub.add_parser("mark-brief-sent")
+    d = sub.add_parser("dump")
+    d.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD (default today)")
+    f = sub.add_parser("fitness")
+    f.add_argument("date", nargs="?", default=None, help="YYYY-MM-DD (default today)")
+    st = sub.add_parser("sets")
+    st.add_argument("activity_id", help="Garmin activityId of a strength workout")
+    args = p.parse_args()
+
+    if args.cmd == "should-brief":
+        sys.exit(cmd_should_brief(args))
+    elif args.cmd == "mark-brief-sent":
+        sys.exit(cmd_mark_sent(args))
+    elif args.cmd == "dump":
+        sys.exit(cmd_dump(args))
+    elif args.cmd == "fitness":
+        sys.exit(cmd_fitness(args))
+    elif args.cmd == "sets":
+        sys.exit(cmd_sets(args))
+
+
+if __name__ == "__main__":
+    main()

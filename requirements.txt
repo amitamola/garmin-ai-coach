@@ -1,0 +1,18 @@
+# --- Core (required) ---
+# Unofficial Garmin Connect client. Pulls curl_cffi / requests in automatically.
+# NOTE: the old `garth` auth library is deprecated and is NOT used by modern
+# garminconnect (>=0.3) — do not add it.
+garminconnect>=0.3.6
+
+# --- Optional: voice-message transcription (local, offline Whisper) ---
+# Enable to let the bot transcribe Telegram voice notes. First run downloads a
+# small model from Hugging Face and caches it. CPU-only works fine.
+#   pip install faster-whisper
+# faster-whisper>=1.0
+
+# --- Optional: video understanding ---
+# Enable to let the bot sample frames from short videos you send. PyAV bundles
+# the decoders (no system ffmpeg needed); Pillow resizes the sampled frames.
+#   pip install av Pillow
+# av>=12.0
+# Pillow>=10.0
