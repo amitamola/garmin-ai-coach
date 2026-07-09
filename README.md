@@ -23,7 +23,8 @@ function.
   HR, training readiness) + a workout matched to your readiness and your gym kit.
 - **Readiness-adapted programming** — backs off intensity when readiness is low, ACWR is
   high, recovery time is still counting down, or illness signals (skin-temp + RHR +
-  respiration) line up.
+  respiration) line up — and calls a genuine **rest / recovery day** when readiness is RED
+  or cumulative fatigue is high, instead of always prescribing a workout.
 - **Chat Q&A with memory** — "how did I sleep?", "what's my predicted 10K time?", "give me
   a 30-min rowing session". Remembers the recent conversation.
 - **Photo analysis** — send a meal, a machine screen, or an exercise; send **several photos
@@ -32,9 +33,10 @@ function.
 - **Video understanding** *(optional)* — send a short clip; it samples frames and
   transcribes any narration, then coaches on the whole thing.
 - **Voice notes** *(optional)* — transcribed locally, then answered.
-- **Food logging & nutrition** — `log: 3 eggs, oats, coffee` (or `log:` as a photo caption)
-  builds a dated food journal that feeds calorie/protein coaching. Optional meal & hydration
-  reminders.
+- **Food logging & nutrition** — just tell it what you ate ("had poha and a protein shake")
+  and it **auto-logs** a dated food journal that feeds calorie/protein coaching; a `log:`
+  prefix (or `log:` photo caption) still works but isn't required. It only confirms a meal
+  once it's actually saved. Optional meal & hydration reminders.
 - **Injury/illness awareness** — tell it "my knee hurts" and it asks what's going on,
   remembers it, and adapts training (or calls for rest) until you say `recovered`.
 - **Session-aware debrief** — a workout logged as several back-to-back Garmin activities
@@ -220,7 +222,7 @@ listens to your owner chat id.
 | `DWRE` (or `done`, `finished`) | Marks today's exercise done + sends the combined session debrief vs the plan |
 | `rest day` (or `skip today`) | Stops the day's exercise check-ins |
 | `AgBot how did I sleep?` (any question) | Context-aware answer |
-| `log: 3 eggs, oats, coffee` | Logs a dated food/journal entry that feeds nutrition coaching |
+| `had 3 eggs, oats & coffee` (or `log: …`) | Auto-logs a dated food entry that feeds nutrition coaching — `log:` prefix optional |
 | *send a photo* (optional caption) | Analyzes the meal / machine screen / exercise |
 | *send several photos together* | Weighs them as one set and recommends |
 | *send a short video* 🎥 | Samples frames + transcribes narration, then coaches *(needs optional extras)* |
