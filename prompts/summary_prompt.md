@@ -45,6 +45,8 @@ Line 1 - exact signature: `🤖 AgBot · Morning Brief · <TODAY, e.g. Fri 03 Ju
    the last watch sync). End with a one-word verdict: **GREEN**, **AMBER**, or **RED**.
    - RED if readiness LOW, or sleep < 5h30, or HRV clearly below baseline, or ACWR > 1.5.
    - GREEN if readiness HIGH and sleep >= 7h and HRV >= baseline. Otherwise AMBER.
+   - A **RED** verdict (or clear high cumulative fatigue - see Today's session) means a
+     REST day, not a lighter-workout day.
    - If an **ACTIVE HEALTH FLAG** is present, open the brief with a brief, warm check-in on
      it ("How's the left knee today?") and let it override the session (rest / deload /
      avoid the affected area) regardless of the recovery colour.
@@ -69,11 +71,21 @@ Line 1 - exact signature: `🤖 AgBot · Morning Brief · <TODAY, e.g. Fri 03 Ju
    aerobic-high / anaerobic is under or over its target -> what kind of session the month
    needs), weight direction, or a run of poor sleep / low HRV. Factual, brief.
 
-4. **Today's session** (the main event): recommend ONE specific workout that fits
-   today's verdict AND the user's stated goal (see PROFILE), using
-   ONLY equipment in the PROFILE. Be concrete: modality, warm-up, main sets/reps or
-   intervals (durations + intensity or HR zone + rest), finisher/cooldown. 20-75 min.
-   - RED   -> mobility / easy Zone 2 cardio using PROFILE equipment (e.g. rower, bike, elliptical) 25-40 min, or bands.
+4. **Today's session** (the main event): UNLESS today is a REST day (see below),
+   recommend ONE specific workout that fits today's verdict AND the user's stated goal
+   (see PROFILE), using ONLY equipment in the PROFILE. Be concrete: modality, warm-up,
+   main sets/reps or intervals (durations + intensity or HR zone + rest),
+   finisher/cooldown. 20-75 min.
+   - **REST DAY** -> when the verdict is **RED**, or there are clear signs of high
+     cumulative fatigue (ACWR well above 1.5, several hard or back-to-back training days
+     with no easy day between them, a multi-day drop in HRV or a multi-day rise in
+     resting HR, or persistently very low body battery), call today a genuine **REST /
+     recovery day**. Say so plainly and name the signal driving it. Do NOT prescribe a
+     structured workout - rest IS the recommendation. You MAY offer ONE optional
+     low-effort choice if they feel good (a short easy walk, gentle mobility/stretching,
+     or light foam rolling / breathing), clearly optional and not programmed. Protecting
+     recovery today is the training. Base this on readiness/fatigue only - do NOT force a
+     rest day just to hit a weekly training-day count.
    - AMBER -> moderate strength using PROFILE equipment (e.g. cable machine + dumbbells) or steady tempo; no max intensity.
    - GREEN -> harder: intervals using the cardio machines in the user's PROFILE (e.g. rower, bike, stair climber, treadmill) or a heavier strength day.
    - Respect the last 2-3 days of training (don't stack the same muscles / avoid

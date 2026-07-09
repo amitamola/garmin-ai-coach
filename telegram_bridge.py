@@ -297,6 +297,28 @@ def append_journal(text):
         log.error("journal save failed: %s", exc)
 
 
+_LOG_MARKER_RE = re.compile(r"\[\[LOG:\s*(.*?)\]\]", re.IGNORECASE | re.DOTALL)
+
+
+def _extract_log_marker(text):
+    """Pull a model-emitted [[LOG: ...]] food marker out of a reply.
+
+    The qa / image prompts tell the model to append this marker whenever the user
+    REPORTS actually eating or drinking something (any phrasing - no 'log:' prefix
+    needed). We strip it from the reply the user sees and return the note so the
+    bridge can journal it. Returns (clean_text, note_or_None); note is None when
+    there's nothing to log.
+    """
+    if not text:
+        return text, None
+    notes = _LOG_MARKER_RE.findall(text)
+    if not notes:
+        return text, None
+    clean = _LOG_MARKER_RE.sub("", text).rstrip()
+    note = " ".join(" ".join(notes).split()).strip()
+    return clean, (note or None)
+
+
 def recent_journal_text():
     try:
         with open(JOURNAL_FILE, "r", encoding="utf-8") as fh:
@@ -587,6 +609,8 @@ def _html_to_plain(html_text):
 
 
 def send_message(chat_id, text):
+    if text:  # safety net: never let a raw [[LOG: ...]] marker leak into a message
+        text = _LOG_MARKER_RE.sub("", text).rstrip()
     rendered = md_to_html(text)
     for chunk in _chunks(rendered, 4000):
         if not chunk.strip():
@@ -1011,6 +1035,10 @@ def generate_qa(question):
         return None, snap
     text = run_llm(prompt)
     if text:
+        text, logged = _extract_log_marker(text)
+        if logged:
+            append_journal(logged)  # auto-log any meal the user reported, not just 'log:'-prefixed
+            text = text + "\n\n\U0001F37D\uFE0F logged \u2713"
         append_history("user", question)
         append_history("agbot", text)
     if _is_workout_review(question):
@@ -1062,11 +1090,22 @@ def generate_images(image_paths, caption, extra=None, media_label="photo"):
         prompt += "\n\n" + extra
     text = run_llm(prompt, images=image_paths)
     if text:
+        text, marker_note = _extract_log_marker(text)
+        cap_low = (caption or "").strip().lower()
+        explicit_log = cap_low.startswith("log:") or cap_low.startswith("log ")
+        logged = False
+        if explicit_log:
+            _journal_shared_media(caption, text, n, media_label)  # keep the richer log: summary
+            logged = True
+        elif marker_note:
+            append_journal(marker_note)  # model spotted a meal the user reported without a 'log:' prefix
+            logged = True
+        if logged:
+            text = text + "\n\n\U0001F37D\uFE0F logged \u2713"
         plural = "s" if n != 1 else ""
         label = caption or ("[shared " + str(n) + " " + media_label + plural + "]")
         append_history("user", label + " [" + media_label + plural + "]")
         append_history("agbot", text)
-        _journal_shared_media(caption, text, n, media_label)
     return text, snap
 
 
