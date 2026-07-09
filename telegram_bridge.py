@@ -1423,7 +1423,8 @@ def do_voice(chat_id, msg):
 # --------------------------------------------------------------------- routing
 HELP_TEXT = (
     "\U0001F916 **AgBot** - your personal Garmin coach.\n\n"
-    "- **GMS** (or 'summary') - your morning brief: recovery read + today's workout.\n"
+    "- **GMS** (or 'summary') - your morning brief: recovery read + today's workout (or a "
+    "genuine rest day when you need to recover).\n"
     "- **DWRE** ('done with recommended exercise') - I pull your whole day's session "
     "together (warm-up + strength + cardio + stretch, however you split it in Garmin) and "
     "grade it against the plan.\n"
@@ -1437,8 +1438,9 @@ HELP_TEXT = (
     "- \U0001F3A5 **Send a short video** (form check, a machine, a pan across the buffet) - "
     "I sample frames + listen to any narration and coach on the whole clip.\n"
     "- \U0001F3A4 **Send a voice note** and I'll transcribe it, then answer - speak naturally.\n"
-    "- **log:** note a meal or how you feel - e.g. 'log: ate 3 eggs, knee felt fine' - "
-    "or just add **log:** as the caption on a food photo and I'll count it. I remember it across days.\n"
+    "- **Just tell me what you ate** ('had poha and a protein shake') and I'll log it "
+    "automatically - no **log:** prefix needed (though 'log:' still works, incl. as a photo "
+    "caption). I only confirm once it's actually saved, and I remember it across days.\n"
     "- \U0001FA79 **Tell me if you're hurt or unwell** ('my knee hurts', 'I feel sick') and "
     "I'll ask what's going on, remember it, and adapt your training (or call for rest) until "
     "you reply **recovered**.\n"
