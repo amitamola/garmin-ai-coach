@@ -103,7 +103,7 @@ def cmd_mark_sent(args):
 
 # ------------------------------------------------------------------------ dump
 def _trim_activity(a):
-    return {
+    out = {
         "activity_id": a.get("activityId"),
         "name": a.get("activityName"),
         "type": (a.get("activityType") or {}).get("typeKey"),
@@ -118,6 +118,20 @@ def _trim_activity(a):
         "anaerobic_te": a.get("anaerobicTrainingEffect"),
         "avg_power": a.get("avgPower"),
     }
+    # Extra per-activity signals; dropped when absent so strength/cardio rows stay lean.
+    extras = {
+        "training_effect_label": a.get("trainingEffectLabel"),
+        "bb_cost": a.get("differenceBodyBattery"),
+        "sweat_loss_ml": _round(a.get("waterEstimated")),
+        "moderate_intensity_min": a.get("moderateIntensityMinutes"),
+        "vigorous_intensity_min": a.get("vigorousIntensityMinutes"),
+        "elevation_gain_m": _round(a.get("elevationGain"), 1),
+        "steps": a.get("steps"),
+        "avg_cadence_spm": _round(a.get("averageRunningCadenceInStepsPerMinute")),
+        "avg_speed_mps": _round(a.get("averageSpeed"), 2),
+    }
+    out.update({k: v for k, v in extras.items() if v is not None})
+    return out
 
 
 def _count_breathing_disruptions(sleep_raw):
@@ -130,6 +144,32 @@ def _count_breathing_disruptions(sleep_raw):
                if isinstance(e, dict)
                and isinstance(e.get("value"), (int, float))
                and 0 < e["value"] < 255)
+
+
+def _nap_local(ts_gmt, offset_min):
+    """Convert a Garmin GMT nap timestamp + minute offset to a local ISO 'HH:MM' string."""
+    try:
+        return (datetime.fromisoformat(ts_gmt)
+               + timedelta(minutes=offset_min or 0)).isoformat(timespec="minutes")
+    except Exception:  # noqa: BLE001
+        return ts_gmt
+
+
+def _round(v, n=0):
+    """Round numbers for compact output; leave non-numbers (and bools) untouched."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v
+    return round(v) if n == 0 else round(v, n)
+
+
+def _epoch_ms_local(ms):
+    """Garmin *Local* epoch-millis already encode wall-clock time as if UTC -> 'YYYY-MM-DDTHH:MM'."""
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+        return None
+    try:
+        return datetime.utcfromtimestamp(ms / 1000).isoformat(timespec="minutes")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def build_snapshot(d_today=None):
@@ -155,6 +195,32 @@ def build_snapshot(d_today=None):
     if dto_today:
         scores = dto_today.get("sleepScores") or {}
         overall = scores.get("overall") or {} if isinstance(scores, dict) else {}
+        # Per-dimension sleep sub-scores (which PART of the night was good/poor vs its optimal band).
+        _sub_dims = ("totalDuration", "stress", "awakeCount", "remPercentage",
+                     "restlessness", "lightPercentage", "deepPercentage")
+        sub_scores = {}
+        if isinstance(scores, dict):
+            for _dim in _sub_dims:
+                _sc = scores.get(_dim)
+                if isinstance(_sc, dict):
+                    sub_scores[_dim] = {k: v for k, v in {
+                        "value": _sc.get("value"),
+                        "qualifier": _sc.get("qualifierKey"),
+                        "optimal_low": _sc.get("optimalStart"),
+                        "optimal_high": _sc.get("optimalEnd"),
+                    }.items() if v is not None}
+        # Garmin's personalised sleep-need model (minutes -> hours). nextSleepNeed = TONIGHT's target.
+        _sn = dto_today.get("sleepNeed") or {}
+        _nsn = dto_today.get("nextSleepNeed") or {}
+
+        def _need_h(v):
+            return round(v / 60, 1) if isinstance(v, (int, float)) else None
+
+        sleep_need_adjust = {k: v for k, v in {
+            "sleep_history": _nsn.get("sleepHistoryAdjustment"),
+            "hrv": _nsn.get("hrvAdjustment"),
+            "nap": _nsn.get("napAdjustment"),
+        }.items() if v and v != "NO_CHANGE"}
         sleep = {
             "date": iso(d_today),
             "score": overall.get("value"),
@@ -177,7 +243,44 @@ def build_snapshot(d_today=None):
             "skin_temp_calibration_days": (sleep_raw or {}).get("skinTempCalibrationDays"),
             "score_feedback": (dto_today.get("sleepScores") or {}).get("overall", {}).get("qualifierKey")
             if isinstance(dto_today.get("sleepScores"), dict) else None,
+            "score_feedback_garmin": dto_today.get("sleepScoreFeedback"),
+            "score_personalized_insight": dto_today.get("sleepScorePersonalizedInsight"),
+            "sub_scores": sub_scores or None,
+            "avg_sleep_stress": dto_today.get("avgSleepStress"),
+            "avg_sleep_hr": dto_today.get("avgHeartRate"),
+            "awake_count": dto_today.get("awakeCount"),
+            "bed_time_local": _epoch_ms_local(dto_today.get("sleepStartTimestampLocal")),
+            "wake_time_local": _epoch_ms_local(dto_today.get("sleepEndTimestampLocal")),
+            "sleep_need_last_night_h": _need_h(_sn.get("actual")),
+            "sleep_need_tonight_h": _need_h(_nsn.get("actual")),
+            "sleep_need_baseline_h": _need_h(_nsn.get("baseline")),
+            "sleep_need_tonight_feedback": _nsn.get("feedback"),
+            "sleep_need_tonight_adjustments": sleep_need_adjust or None,
         }
+
+    # Daytime naps (Garmin nap detection) - separate from overnight sleep; they add recovery
+    # through the day. Pulled from the SAME sleep DTO already fetched (no extra API call).
+    naps_today = None
+    if dto_today:
+        nap_list = dto_today.get("dailyNapDTOS") or []
+        total_nap_s = dto_today.get("napTimeSeconds")
+        if nap_list or total_nap_s:
+            naps = []
+            for n in nap_list:
+                if not isinstance(n, dict):
+                    continue
+                dur = n.get("napTimeSec")
+                naps.append({
+                    "start_local": _nap_local(n.get("napStartTimestampGMT"), n.get("napStartTimeOffset")),
+                    "end_local": _nap_local(n.get("napEndTimestampGMT"), n.get("napEndTimeOffset")),
+                    "duration_min": round(dur / 60) if isinstance(dur, (int, float)) else None,
+                    "feedback": n.get("napFeedback"),
+                })
+            naps_today = {
+                "total_nap_min": round(total_nap_s / 60) if isinstance(total_nap_s, (int, float)) else None,
+                "count": len(naps),
+                "naps": naps,
+            }
 
     def day_stats(d):
         s = safe(lambda: g.get_stats(iso(d)))
@@ -367,12 +470,15 @@ def build_snapshot(d_today=None):
                 "bmi": last.get("bmi"),
                 "body_fat_pct": last.get("bodyFat"),
                 "muscle_mass_g": last.get("muscleMass"),
+                "body_water_pct": last.get("bodyWater"),
+                "bone_mass_g": last.get("boneMass"),
             }
 
     # ---- Whole-day wellness (get_user_summary is Garmin's richest single call) ----
     usumm = safe(lambda: g.get_user_summary(iso(d_today)))
     resp = safe(lambda: g.get_respiration_data(iso(d_today)))
     hydr = safe(lambda: g.get_hydration_data(iso(d_today)))
+    ads = safe(lambda: g.get_all_day_stress(iso(d_today)))
     wellness = None
     last_sync_gmt = None
     last_sync_age_min = None
@@ -416,6 +522,53 @@ def build_snapshot(d_today=None):
             wellness["hydration_logged_ml"] = hydr.get("valueInML")
             wellness["hydration_goal_ml"] = (round(hydr.get("goalInML"))
                                              if isinstance(hydr.get("goalInML"), (int, float)) else None)
+        # Garmin's own plain-English Body Battery read + daytime recovery/nap events.
+        _dfe = usumm.get("bodyBatteryDynamicFeedbackEvent")
+        if isinstance(_dfe, dict):
+            wellness["body_battery_feedback"] = _dfe.get("feedbackShortType")
+            wellness["body_battery_feedback_detail"] = _dfe.get("feedbackLongType")
+            wellness["body_battery_level_label"] = _dfe.get("bodyBatteryLevel")
+        _bb_events = usumm.get("bodyBatteryActivityEventList")
+        if isinstance(_bb_events, list):
+            evs = []
+            for _e in _bb_events:
+                if not isinstance(_e, dict) or _e.get("eventType") == "SLEEP":
+                    continue  # overnight charge already captured in last_night_sleep
+                _fb = _e.get("shortFeedback")
+                _dur = _e.get("durationInMilliseconds")
+                evs.append({k: v for k, v in {
+                    "type": _e.get("eventType"),
+                    "bb_impact": _e.get("bodyBatteryImpact"),
+                    "feedback": _fb if (_fb and _fb != "NONE") else None,
+                    "start_gmt": _e.get("eventStartTimeGmt"),
+                    "duration_min": round(_dur / 60000) if isinstance(_dur, (int, float)) else None,
+                }.items() if v is not None})
+            if evs:
+                wellness["body_battery_events"] = evs
+        # Hourly stress curve (downsampled) - shows WHEN stress peaked, not just the daily split.
+        if isinstance(ads, dict) and "__error__" not in ads:
+            _arr = ads.get("stressValuesArray") or []
+            _off_ms = 0
+            try:
+                _sg = datetime.fromisoformat((ads.get("startTimestampGMT") or "").replace("Z", ""))
+                _sl = datetime.fromisoformat((ads.get("startTimestampLocal") or "").replace("Z", ""))
+                _off_ms = (_sl - _sg).total_seconds() * 1000
+            except Exception:  # noqa: BLE001
+                _off_ms = 0
+            _buckets = {}
+            for _pt in _arr:
+                if not (isinstance(_pt, (list, tuple)) and len(_pt) >= 2):
+                    continue
+                _ts, _lvl = _pt[0], _pt[1]
+                if not isinstance(_ts, (int, float)) or not isinstance(_lvl, (int, float)) or _lvl < 0:
+                    continue  # skip -1/-2 no-reading sentinels
+                _hr = datetime.utcfromtimestamp((_ts + _off_ms) / 1000).hour
+                _buckets.setdefault(_hr, []).append(_lvl)
+            if _buckets:
+                wellness["stress_curve_hourly"] = {
+                    f"{_h:02d}:00": round(sum(_v) / len(_v))
+                    for _h, _v in sorted(_buckets.items())
+                }
         sync = usumm.get("lastSyncTimestampGMT")
         if sync:
             try:
@@ -460,12 +613,91 @@ def build_snapshot(d_today=None):
         bb_current_as_of = _bb_ts.isoformat(timespec="minutes")
         bb_current_age_min = round((datetime.now() - _bb_ts).total_seconds() / 60)
 
+    # ---- Static-ish profile config: timezone (for correct time-of-day reasoning), habitual
+    # sleep window, and training-day preferences. From settings + user profile (userData). ----
+    ups = safe(lambda: g.get_userprofile_settings())
+    uprof = safe(lambda: g.get_user_profile())
+    _ud = (uprof.get("userData") if isinstance(uprof, dict) else None) or {}
+    _ups = ups if isinstance(ups, dict) and "__error__" not in ups else {}
+    profile_config = None
+    if _ups or _ud:
+        def _hhmm(sec):
+            if not isinstance(sec, (int, float)):
+                return None
+            return f"{int(sec // 3600) % 24:02d}:{int((sec % 3600) // 60):02d}"
+
+        _win = None
+        _windows = uprof.get("userSleepWindows") if isinstance(uprof, dict) else None
+        if isinstance(_windows, list) and _windows:
+            _daily = next((w for w in _windows if isinstance(w, dict)
+                           and w.get("sleepWindowFrequency") == "DAILY"), _windows[0])
+            if isinstance(_daily, dict):
+                _win = {
+                    "bedtime": _hhmm(_daily.get("startSleepTimeSecondsFromMidnight")),
+                    "waketime": _hhmm(_daily.get("endSleepTimeSecondsFromMidnight")),
+                }
+        _age = None
+        try:
+            _by = date.fromisoformat(_ud.get("birthDate"))
+            _age = d_today.year - _by.year - ((d_today.month, d_today.day) < (_by.month, _by.day))
+        except Exception:  # noqa: BLE001
+            _age = None
+        profile_config = {k: v for k, v in {
+            "timezone": _ups.get("timeZone"),
+            "measurement_system": _ups.get("measurementSystem") or _ud.get("measurementSystem"),
+            "first_day_of_week": (_ups.get("firstDayOfWeek") or {}).get("dayName"),
+            "age": _age,
+            "available_training_days": _ud.get("availableTrainingDays"),
+            "preferred_long_training_days": _ud.get("preferredLongTrainingDays"),
+            "habitual_sleep_window": _win,
+        }.items() if v is not None} or None
+
+    # ---- Weekly intensity minutes vs Garmin's goal (WHO 150-min target; vigorous counts double) ----
+    wim = safe(lambda: g.get_weekly_intensity_minutes(iso(week_start), iso(d_today)))
+    weekly_intensity = None
+    if isinstance(wim, list) and wim and isinstance(wim[-1], dict):
+        _cur = wim[-1]
+        _mod = _cur.get("moderateValue")
+        _vig = _cur.get("vigorousValue")
+        _tot = (_mod + 2 * _vig) if isinstance(_mod, (int, float)) and isinstance(_vig, (int, float)) else None
+        weekly_intensity = {k: v for k, v in {
+            "week_start": _cur.get("calendarDate"),
+            "moderate_min": _mod,
+            "vigorous_min": _vig,
+            "total_toward_goal": _tot,
+            "weekly_goal": _cur.get("weeklyGoal"),
+        }.items() if v is not None} or None
+
+    # ---- Multi-week trend lines (last 8 weeks) for direction, kept compact to limit payload ----
+    wsteps = safe(lambda: g.get_weekly_steps(iso(d_today)))
+    wstress = safe(lambda: g.get_weekly_stress(iso(d_today)))
+    weekly_trends = {}
+    if isinstance(wsteps, list) and wsteps:
+        _rows = []
+        for _w in wsteps[-8:]:
+            if not isinstance(_w, dict):
+                continue
+            _avg = (_w.get("values") or {}).get("averageSteps")
+            if isinstance(_avg, (int, float)):
+                _rows.append({"week": _w.get("calendarDate"), "avg_steps": round(_avg)})
+        if _rows:
+            weekly_trends["avg_daily_steps_by_week"] = _rows
+    if isinstance(wstress, list) and wstress:
+        _rows = []
+        for _w in wstress[-8:]:
+            if isinstance(_w, dict) and _w.get("value") is not None:
+                _rows.append({"week": _w.get("calendarDate"), "avg_stress": _w.get("value")})
+        if _rows:
+            weekly_trends["avg_stress_by_week"] = _rows
+    weekly_trends = weekly_trends or None
+
     snapshot = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "athlete": full_name,
         "sleep_date": iso(d_today),
         "activity_date": iso(d_yest),
         "last_night_sleep": sleep,
+        "naps_today": naps_today,
         "yesterday_full_day": day_stats(d_yest),
         "today_so_far": today_stats,
         "training_readiness": readiness,
@@ -482,6 +714,9 @@ def build_snapshot(d_today=None):
         "latest_weigh_in_30d": latest_weight,
         "last_sync_gmt": last_sync_gmt,
         "last_sync_age_min": last_sync_age_min,
+        "profile_config": profile_config,
+        "weekly_intensity": weekly_intensity,
+        "weekly_trends": weekly_trends,
     }
     return snapshot
 

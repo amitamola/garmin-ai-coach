@@ -19,8 +19,9 @@ function.
 
 ## ✨ What it does
 
-- **Morning brief ("GMS")** — recovery/readiness read (HRV, sleep, body battery, resting
-  HR, training readiness) + a workout matched to your readiness and your gym kit.
+- **Morning brief ("GMS")** — recovery/readiness read (HRV, sleep + Garmin's own sleep
+  verdict & sleep-need, naps, body battery, resting HR, training readiness) + a workout
+  matched to your readiness and your gym kit.
 - **Readiness-adapted programming** — backs off intensity when readiness is low, ACWR is
   high, recovery time is still counting down, or illness signals (skin-temp + RHR +
   respiration) line up — and calls a genuine **rest / recovery day** when readiness is RED
@@ -72,7 +73,9 @@ function.
 ```
 
 - **`garmin_coach.py`** — the data layer. Logs into Garmin Connect and produces a rich
-  JSON snapshot (sleep, HRV, readiness, training status, activities, VO2max, and more).
+  JSON snapshot (sleep + Garmin's sleep verdict / sub-scores / sleep-need, naps, HRV,
+  readiness, training status & load focus, activities with per-session training effect,
+  VO2max, body-battery feedback, hourly stress curve, weekly trends, and more).
 - **`telegram_bridge.py`** — the brain + the Telegram front-end. It classifies your
   message, assembles a prompt from your `profile.md`, the Garmin snapshot, your food
   journal and recent chat, sends it to the model via **`run_llm()`**, and returns the
