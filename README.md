@@ -36,7 +36,7 @@ function.
 - **Food logging & nutrition** — just tell it what you ate ("had poha and a protein shake")
   and it **auto-logs** a dated food journal that feeds calorie/protein coaching; a `log:`
   prefix (or `log:` photo caption) still works but isn't required. It only confirms a meal
-  once it's actually saved. Optional meal & hydration reminders.
+  once it's actually saved. Optional meal reminders.
 - **Injury/illness awareness** — tell it "my knee hurts" and it asks what's going on,
   remembers it, and adapts training (or calls for rest) until you say `recovered`.
 - **Session-aware debrief** — a workout logged as several back-to-back Garmin activities
@@ -47,8 +47,10 @@ function.
 - **Exercise check-ins** — a few light nudges through the day (10am / 12 / 4pm / 9pm) asking if
   you did the recommended exercise; reply **DWRE** when done or `rest day` / `skip today` to
   stop them for the day.
+- **Hydration reminders** — a light "drink water" nudge every 2 hours from 8am–10pm (you log
+  the actual water on your watch); toggleable like the other reminders.
 - **Proactive nudges** — auto-sends the brief by ~9:30am if you didn't ask, warns you on a
-  rough morning, and (optionally) reminds you to log meals and to drink water every 2h.
+  rough morning, and (optionally) reminds you to log meals.
 - **Holistic context** — every reply is grounded in your *full* picture: recovery + load +
   what you've eaten/planned + active health flags. Food and training advice reference each
   other.
