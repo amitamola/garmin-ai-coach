@@ -22,6 +22,9 @@ function.
 - **Morning brief ("GMS")** — recovery/readiness read (HRV, sleep + Garmin's own sleep
   verdict & sleep-need, naps, body battery, resting HR, training readiness) + a workout
   matched to your readiness and your gym kit.
+- **Knows your plans** — mention an activity you've got coming up ("I've got a hike
+  tomorrow") and the next morning's brief makes THAT the day's session: how to pace and fuel
+  it given last night's recovery, plus a readiness-based fallback in case the plan changes.
 - **Readiness-adapted programming** — backs off intensity when readiness is low, ACWR is
   high, recovery time is still counting down, or illness signals (skin-temp + RHR +
   respiration) line up — and calls a genuine **rest / recovery day** when readiness is RED
