@@ -19,8 +19,9 @@ function.
 
 ## ✨ What it does
 
-- **Morning brief ("GMS")** — recovery/readiness read (HRV, sleep, body battery, resting
-  HR, training readiness) + a workout matched to your readiness and your gym kit.
+- **Morning brief ("GMS")** — recovery/readiness read (HRV, sleep + Garmin's own sleep
+  verdict & sleep-need, naps, body battery, resting HR, training readiness) + a workout
+  matched to your readiness and your gym kit.
 - **Readiness-adapted programming** — backs off intensity when readiness is low, ACWR is
   high, recovery time is still counting down, or illness signals (skin-temp + RHR +
   respiration) line up — and calls a genuine **rest / recovery day** when readiness is RED
@@ -46,7 +47,9 @@ function.
   immediately.
 - **Exercise check-ins** — a few light nudges through the day (10am / 12 / 4pm / 9pm) asking if
   you did the recommended exercise; reply **DWRE** when done or `rest day` / `skip today` to
-  stop them for the day.
+  stop them for the day. When the morning brief itself calls a **rest / recovery day**, the
+  check-ins automatically switch to a single gentle rest-aware note — no "did you exercise?"
+  nagging on a day the coach told you to rest.
 - **Hydration reminders** — a light "drink water" nudge every 2 hours from 8am–10pm (you log
   the actual water on your watch); toggleable like the other reminders.
 - **Proactive nudges** — auto-sends the brief by ~9:30am if you didn't ask, warns you on a
@@ -72,7 +75,9 @@ function.
 ```
 
 - **`garmin_coach.py`** — the data layer. Logs into Garmin Connect and produces a rich
-  JSON snapshot (sleep, HRV, readiness, training status, activities, VO2max, and more).
+  JSON snapshot (sleep + Garmin's sleep verdict / sub-scores / sleep-need, naps, HRV,
+  readiness, training status & load focus, activities with per-session training effect,
+  VO2max, body-battery feedback, hourly stress curve, weekly trends, and more).
 - **`telegram_bridge.py`** — the brain + the Telegram front-end. It classifies your
   message, assembles a prompt from your `profile.md`, the Garmin snapshot, your food
   journal and recent chat, sends it to the model via **`run_llm()`**, and returns the

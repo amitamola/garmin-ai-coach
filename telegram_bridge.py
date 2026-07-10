@@ -319,6 +319,19 @@ def _extract_log_marker(text):
     return clean, (note or None)
 
 
+_REST_MARKER_RE = re.compile(r"\[\[REST_DAY\]\]", re.IGNORECASE)
+
+
+def _extract_rest_marker(text):
+    """Pull the model-emitted [[REST_DAY]] marker off the morning brief. The summary
+    prompt appends it only when today's plan is a genuine rest / recovery day, so the
+    bridge can switch the day's exercise check-ins to a gentle rest-aware note instead
+    of nagging 'did you do your exercise?'. Returns (clean_text, is_rest)."""
+    if not text or not _REST_MARKER_RE.search(text):
+        return text, False
+    return _REST_MARKER_RE.sub("", text).rstrip(), True
+
+
 def recent_journal_text():
     try:
         with open(JOURNAL_FILE, "r", encoding="utf-8") as fh:
@@ -609,8 +622,8 @@ def _html_to_plain(html_text):
 
 
 def send_message(chat_id, text):
-    if text:  # safety net: never let a raw [[LOG: ...]] marker leak into a message
-        text = _LOG_MARKER_RE.sub("", text).rstrip()
+    if text:  # safety net: never let a raw marker ([[LOG: ...]] / [[REST_DAY]]) leak into a message
+        text = _REST_MARKER_RE.sub("", _LOG_MARKER_RE.sub("", text)).rstrip()
     rendered = md_to_html(text)
     for chunk in _chunks(rendered, 4000):
         if not chunk.strip():
@@ -907,7 +920,16 @@ DATA_USE_DIRECTIVE = (
     "- Recovery: for a morning brief prefer morning_readiness (wake-time, WELL_RECOVERED etc.); "
     "otherwise training-readiness score + sub-factors, recovery-time hours, HRV vs baseline, "
     "body_battery_current (Garmin's most-recent value; matches the Connect app/web), sleep "
-    "score/duration/stages, stress.\n"
+    "score/duration/stages plus Garmin's own verdict on the night (last_night_sleep.score_feedback_garmin "
+    "and score_personalized_insight) and its per-dimension sub_scores - name the weak dimension (e.g. REM "
+    "or deep below its optimal band) instead of only the overall number, naps_today (daytime naps add "
+    "recovery and alertness - factor them in, don't discuss overnight sleep alone), stress.\n"
+    "- Sleep need & timing: last_night_sleep.sleep_need_tonight_h is Garmin's PERSONALISED sleep "
+    "target for tonight (compare with sleep_need_baseline_h; sleep_need_tonight_feedback and "
+    "sleep_need_tonight_adjustments explain why it moved - sleep debt, HRV, or today's nap). Turn it "
+    "into a concrete bedtime, and read bed_time_local / wake_time_local against "
+    "profile_config.habitual_sleep_window (the user's usual bed/wake schedule) to flag late or irregular "
+    "timing rather than judging total hours alone.\n"
     "- Illness / overreaching watch: last_night_sleep.skin_temp_deviation_c is the deviation from "
     "the user's ~19-day baseline. A notable swing (roughly >=+/-0.5C) - ESPECIALLY together with a "
     "raised resting HR (wellness_today.rhr_today vs rhr_7d_avg), elevated respiration "
@@ -915,17 +937,23 @@ DATA_USE_DIRECTIVE = (
     "the body is fighting illness, alcohol, heat or under-recovery; when several line up, back off "
     "intensity and say why. A small deviation with everything else normal is noise - don't alarm.\n"
     "- Day strain: wellness_today sedentary_h vs active_h/highly_active_h (long sedentary days are "
-    "their own load), the stress-duration split (rest/low/medium/high_stress_min + stress_qualifier), "
+    "their own load), the stress-duration split (rest/low/medium/high_stress_min + stress_qualifier) "
+    "plus stress_curve_hourly (WHEN stress peaked through the day, e.g. a stressful evening), "
     "and the resting-HR trend (rhr_today vs rhr_7d_avg - a multi-day rise is an early fatigue flag).\n"
     "- Load & direction: ACWR + acute/chronic load, training status/trend, and the last 7 days of "
     "sessions - including logged_sets (exercises, reps, top weight) so you know which muscle groups "
     "were just trained. Use training_status.load_focus (aerobic-low / aerobic-high / anaerobic load "
     "vs Garmin's target ranges + its feedback phrase, e.g. AEROBIC_LOW_FOCUS) to steer WHICH kind of "
-    "session to add so the 4-week balance moves toward target.\n"
+    "session to add so the 4-week balance moves toward target. Each recent session also carries "
+    "Garmin's training_effect_label (e.g. RECOVERY / TEMPO / VO2MAX), its bb_cost (body-battery drain) "
+    "and per-session intensity minutes - use these to judge how taxing each workout actually was. When "
+    "scheduling, respect profile_config.available_training_days / preferred_long_training_days, and read "
+    "weekly_trends (last 8 weeks of avg daily steps and avg stress) for overall direction.\n"
     "- Fitness: VO2max, fitness age, endurance score, hill score, race predictions, lactate-threshold "
-    "HR, cycling FTP, weekly intensity minutes vs goal, and personal_records (nudge when a session is "
-    "within reach of a PR).\n"
-    "- Body & context: weight trend, remaining calorie budget, sweat_loss_ml (post-sweaty-session "
+    "HR, cycling FTP, weekly_intensity (total_toward_goal vs weekly_goal - the WHO 150-min target, "
+    "vigorous counts double), and personal_records (nudge when a session is within reach of a PR).\n"
+    "- Body & context: weight trend (plus latest_weigh_in_30d body_water_pct / bone_mass_g when a "
+    "composition weigh-in exists), remaining calorie budget, sweat_loss_ml (post-sweaty-session "
     "rehydration nudge vs hydration_goal_ml), and the NOTES the user logged.\n"
     "- Post-workout only: ACTIVITY_EXTRAS gives time-in-HR-zone (minutes per zone -> was it truly "
     "easy/hard, and did it match the plan) and, for outdoor sessions, the weather (heat/humidity "
@@ -936,10 +964,19 @@ DATA_USE_DIRECTIVE = (
     "novelty that avoids what was just trained; tie any nutrition advice to today's load and calorie "
     "budget. After reasoning over everything, report tightly and name the 2-3 signals that actually "
     "drove the advice. For body battery always use body_battery_current (Garmin's canonical value, "
-    "same as the Connect app/web); if body_battery_current_age_min is above ~15, add its as-of "
-    "time (body_battery_current_as_of) and note it reflects the last watch sync so it can lag the "
-    "watch face until the watch uploads - otherwise just state the number. If last_sync_age_min is "
-    "large (say >60), caveat that the whole picture predates the last sync. "
+    "same as the Connect app/web). If body_battery_current_age_min is above ~15, add its as-of time "
+    "(body_battery_current_as_of) and explain the lag HONESTLY: this is Garmin's most recently "
+    "PUBLISHED body-battery sample, and Garmin's body-battery feed trails real time by ~15-25 min "
+    "even right after a fresh sync - so never imply the watch is unsynced when it isn't. Cross-check "
+    "last_sync_age_min: if it's small (recently synced), say the watch IS synced and this is just "
+    "Garmin's body-battery data catching up; only if last_sync_age_min is also large (say >30) should "
+    "you attribute the staleness to the watch not having uploaded. Otherwise just state the number. "
+    "When present, wellness_today.body_battery_feedback is Garmin's own plain-English read of the day's "
+    "battery (e.g. DAY_BALANCED_AND_INACTIVE) and wellness_today.body_battery_events lists daytime "
+    "recovery/nap periods (e.g. RESTFUL_PERIOD) with their battery impact - use them to explain WHY the "
+    "battery sits where it does. "
+    "TIMEZONE: treat profile_config.timezone as the user's real local timezone for any time-of-day or "
+    "'as of' reasoning - it is authoritative when they are travelling and the server clock may differ. "
     "NOTES and RECENT CONVERSATION lines are DATE-STAMPED with a relative tag (today / "
     "yesterday / N days ago): attribute food, workouts and events to the day they happened, "
     "count only TODAY's entries (and anything the user shared today) as today's, and never "
@@ -1023,6 +1060,8 @@ def generate_summary():
         return None, snap
     text = run_llm(prompt)
     if text:
+        text, is_rest = _extract_rest_marker(text)
+        _set_coach_rest(is_rest)  # tell the day's check-ins whether the brief prescribed rest
         append_history("user", "GMS (requested the morning brief)")
         append_history("agbot", text)
         save_todays_brief(text)
@@ -1801,6 +1840,19 @@ def _set_exercise_status(status):
     _save_exercise_state(st)
 
 
+def _set_coach_rest(flag):
+    """Record whether TODAY's morning brief prescribed a genuine rest/recovery day, so the
+    adherence check-ins go rest-aware instead of nagging. Cleared if a later brief the same
+    day prescribes a workout."""
+    st = _load_exercise_state()
+    if flag:
+        st["coach_rest"] = True
+    else:
+        st.pop("coach_rest", None)
+        st.pop("rest_note_sent", None)
+    _save_exercise_state(st)
+
+
 def exercise_checkin_slots_due(now, asked, catchup_min=EXERCISE_CHECKIN_CATCHUP_MIN):
     """Pure core (testable): check-in slots that have arrived and aren't already asked; each
     is (slot, hour, should_send), should_send False past the catch-up window."""
@@ -1834,6 +1886,14 @@ def _exercise_checkin_message():
             "'skip today' if you're not exercising and I'll stop asking.")
 
 
+def _exercise_rest_message():
+    """Sent ONCE on a day the coach itself prescribed rest - a gentle acknowledgement instead
+    of the 'did you exercise?' nag."""
+    return ("\U0001F6CC AgBot check-in \u00B7 today's a rest / recovery day per your brief - "
+            "nothing to tick off, so I won't chase you. Rest up. If you did do the optional "
+            "easy movement, reply DWRE and I'll wrap it up.")
+
+
 def maybe_exercise_checkins():
     own = owner()
     if not own:
@@ -1843,6 +1903,20 @@ def maybe_exercise_checkins():
         return  # resolved for today - stop asking
     now = datetime.now()
     asked = list(st.get("asked") or [])
+    # The coach itself prescribed rest today -> send ONE gentle rest-aware note (not the
+    # 'did you exercise?' nag), then stay quiet for the rest of the day.
+    if st.get("coach_rest"):
+        if st.get("rest_note_sent"):
+            return
+        due = exercise_checkin_slots_due(now, asked)
+        if not due:
+            return  # first check-in hour not reached yet
+        if any(should for _s, _h, should in due):
+            log.info("Exercise rest-day note at %s", now.strftime("%H:%M"))
+            send_message(own, _exercise_rest_message())
+        st["rest_note_sent"] = True
+        _save_exercise_state(st)
+        return
     changed = False
     for slot, hh, should in exercise_checkin_slots_due(now, asked):
         if should:
