@@ -319,6 +319,19 @@ def _extract_log_marker(text):
     return clean, (note or None)
 
 
+_REST_MARKER_RE = re.compile(r"\[\[REST_DAY\]\]", re.IGNORECASE)
+
+
+def _extract_rest_marker(text):
+    """Pull the model-emitted [[REST_DAY]] marker off the morning brief. The summary
+    prompt appends it only when today's plan is a genuine rest / recovery day, so the
+    bridge can switch the day's exercise check-ins to a gentle rest-aware note instead
+    of nagging 'did you do your exercise?'. Returns (clean_text, is_rest)."""
+    if not text or not _REST_MARKER_RE.search(text):
+        return text, False
+    return _REST_MARKER_RE.sub("", text).rstrip(), True
+
+
 def recent_journal_text():
     try:
         with open(JOURNAL_FILE, "r", encoding="utf-8") as fh:
@@ -609,8 +622,8 @@ def _html_to_plain(html_text):
 
 
 def send_message(chat_id, text):
-    if text:  # safety net: never let a raw [[LOG: ...]] marker leak into a message
-        text = _LOG_MARKER_RE.sub("", text).rstrip()
+    if text:  # safety net: never let a raw marker ([[LOG: ...]] / [[REST_DAY]]) leak into a message
+        text = _REST_MARKER_RE.sub("", _LOG_MARKER_RE.sub("", text)).rstrip()
     rendered = md_to_html(text)
     for chunk in _chunks(rendered, 4000):
         if not chunk.strip():
@@ -1047,6 +1060,8 @@ def generate_summary():
         return None, snap
     text = run_llm(prompt)
     if text:
+        text, is_rest = _extract_rest_marker(text)
+        _set_coach_rest(is_rest)  # tell the day's check-ins whether the brief prescribed rest
         append_history("user", "GMS (requested the morning brief)")
         append_history("agbot", text)
         save_todays_brief(text)
@@ -1825,6 +1840,19 @@ def _set_exercise_status(status):
     _save_exercise_state(st)
 
 
+def _set_coach_rest(flag):
+    """Record whether TODAY's morning brief prescribed a genuine rest/recovery day, so the
+    adherence check-ins go rest-aware instead of nagging. Cleared if a later brief the same
+    day prescribes a workout."""
+    st = _load_exercise_state()
+    if flag:
+        st["coach_rest"] = True
+    else:
+        st.pop("coach_rest", None)
+        st.pop("rest_note_sent", None)
+    _save_exercise_state(st)
+
+
 def exercise_checkin_slots_due(now, asked, catchup_min=EXERCISE_CHECKIN_CATCHUP_MIN):
     """Pure core (testable): check-in slots that have arrived and aren't already asked; each
     is (slot, hour, should_send), should_send False past the catch-up window."""
@@ -1858,6 +1886,14 @@ def _exercise_checkin_message():
             "'skip today' if you're not exercising and I'll stop asking.")
 
 
+def _exercise_rest_message():
+    """Sent ONCE on a day the coach itself prescribed rest - a gentle acknowledgement instead
+    of the 'did you exercise?' nag."""
+    return ("\U0001F6CC AgBot check-in \u00B7 today's a rest / recovery day per your brief - "
+            "nothing to tick off, so I won't chase you. Rest up. If you did do the optional "
+            "easy movement, reply DWRE and I'll wrap it up.")
+
+
 def maybe_exercise_checkins():
     own = owner()
     if not own:
@@ -1867,6 +1903,20 @@ def maybe_exercise_checkins():
         return  # resolved for today - stop asking
     now = datetime.now()
     asked = list(st.get("asked") or [])
+    # The coach itself prescribed rest today -> send ONE gentle rest-aware note (not the
+    # 'did you exercise?' nag), then stay quiet for the rest of the day.
+    if st.get("coach_rest"):
+        if st.get("rest_note_sent"):
+            return
+        due = exercise_checkin_slots_due(now, asked)
+        if not due:
+            return  # first check-in hour not reached yet
+        if any(should for _s, _h, should in due):
+            log.info("Exercise rest-day note at %s", now.strftime("%H:%M"))
+            send_message(own, _exercise_rest_message())
+        st["rest_note_sent"] = True
+        _save_exercise_state(st)
+        return
     changed = False
     for slot, hh, should in exercise_checkin_slots_due(now, asked):
         if should:

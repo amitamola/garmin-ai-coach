@@ -47,7 +47,9 @@ function.
   immediately.
 - **Exercise check-ins** — a few light nudges through the day (10am / 12 / 4pm / 9pm) asking if
   you did the recommended exercise; reply **DWRE** when done or `rest day` / `skip today` to
-  stop them for the day.
+  stop them for the day. When the morning brief itself calls a **rest / recovery day**, the
+  check-ins automatically switch to a single gentle rest-aware note — no "did you exercise?"
+  nagging on a day the coach told you to rest.
 - **Hydration reminders** — a light "drink water" nudge every 2 hours from 8am–10pm (you log
   the actual water on your watch); toggleable like the other reminders.
 - **Proactive nudges** — auto-sends the brief by ~9:30am if you didn't ask, warns you on a
