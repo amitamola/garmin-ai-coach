@@ -77,6 +77,12 @@ LLM_BACKEND = os.environ.get("AGBOT_LLM", "copilot")
 # Optional: the user's first name, used only so the coach can greet by name. All real
 # personalization lives in profile.md - this is just a convenience override.
 USER_NAME = os.environ.get("AGBOT_USER_NAME", "").strip()
+# Pin the Copilot CLI model + reasoning effort (only used by the "copilot" backend).
+# Leave AGBOT_MODEL unset to use the CLI's default model; set it to any id shown by
+# `/model` in an interactive `copilot` session (e.g. "gpt-5.6-luna", "claude-sonnet-4.5",
+# or "auto"). AGBOT_REASONING_EFFORT is one of none|minimal|low|medium|high|xhigh|max.
+COPILOT_MODEL = os.environ.get("AGBOT_MODEL", "").strip()
+COPILOT_REASONING_EFFORT = (os.environ.get("AGBOT_REASONING_EFFORT", "").strip() or "low")
 
 # Auto-summary window (local time). If no summary has been sent yet today and the
 # current time falls in this window, one is pushed automatically.
@@ -117,7 +123,7 @@ HYDRATION_MESSAGES = (
 )
 
 POLL_TIMEOUT = 50          # long-poll seconds
-COPILOT_TIMEOUT = 180      # seconds for a single generation
+COPILOT_TIMEOUT = int(os.environ.get("AGBOT_LLM_TIMEOUT", "180"))  # seconds/generation (raise for slow high-reasoning models)
 SINGLETON_PORT = 49517     # localhost lock so only one instance polls
 MAX_STORED_TURNS = 40      # conversation turns kept on disk
 FITNESS_MAX_AGE_H = 20     # refresh cached fitness profile if older than this
@@ -841,8 +847,10 @@ def _llm_copilot(prompt, images):
         "--no-custom-instructions",
         "--disable-builtin-mcps",
         "--no-color", "--no-remote", "--no-remote-export",
-        "--reasoning-effort", "low",
+        "--reasoning-effort", COPILOT_REASONING_EFFORT,
     ]
+    if COPILOT_MODEL:
+        cmd += ["--model", COPILOT_MODEL]
     for att in images:
         if att:
             cmd += ["--attachment", att]
@@ -2043,6 +2051,8 @@ def main():
     _lock = acquire_singleton_lock()  # noqa: F841
     me = tg("getMe")
     log.info("AgBot online as @%s", me.get("result", {}).get("username"))
+    log.info("LLM model=%s reasoning-effort=%s",
+             COPILOT_MODEL or "(CLI default)", COPILOT_REASONING_EFFORT)
     offset = get_offset()
     while True:
         try:
