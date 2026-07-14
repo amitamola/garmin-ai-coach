@@ -16,6 +16,12 @@ PY="$ROOT/.venv/bin/python"
 export PYTHONIOENCODING="utf-8"
 export PYTHONUTF8="1"
 
+# --- Optional: pin the Copilot CLI model + reasoning effort (else CLI defaults). ---
+# Usual place for these is .env, but you can also uncomment here:
+# export AGBOT_MODEL="gpt-5.6-luna"    # any id from `/model`, or "auto"
+# export AGBOT_REASONING_EFFORT="max"  # none|minimal|low|medium|high|xhigh|max
+# export AGBOT_LLM_TIMEOUT="600"       # raise for slow high-reasoning models
+
 # Load .env (simple KEY=VALUE lines) if present.
 if [ -f "$ROOT/.env" ]; then
     set -a

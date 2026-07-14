@@ -176,6 +176,10 @@ pluggable. Set `AGBOT_LLM` to pick one.
 - **`copilot` (default)** — uses the **[GitHub Copilot CLI](https://docs.github.com/copilot/github-copilot-in-the-cli)**.
   Install it and sign in once (`copilot`), make sure the `copilot` command is on your PATH
   (or set `COPILOT_EXE`), and you're done — no API keys to manage.
+  Pin a specific model with **`AGBOT_MODEL`** (any id from `/model`, e.g. `gpt-5.6-luna`, or
+  `auto`) and its reasoning depth with **`AGBOT_REASONING_EFFORT`** (`low` … `max`); leave both
+  unset for the CLI's own defaults. High-reasoning models are slower per brief, so raise
+  **`AGBOT_LLM_TIMEOUT`** (seconds) if generations start timing out.
 - **OpenAI / Anthropic / Ollama / …** — open `telegram_bridge.py`, find the
   `# --- Optional alternative backends ---` section, **uncomment** the one you want (each is
   ~8 lines), register it in the `_LLM_BACKENDS` dict, `pip install` its SDK, set its API key,
@@ -345,6 +349,9 @@ Everything has a sensible default; override via environment (or `.env`).
 | `AGBOT_OWNER_CHAT_ID` | Your numeric chat id (else `state/telegram_chat_id.txt`) |
 | `AGBOT_LLM` | Model backend name (default `copilot`) |
 | `AGBOT_USER_NAME` | Optional first name so the coach can greet you |
+| `AGBOT_MODEL` | Pin the Copilot CLI model (e.g. `gpt-5.6-luna`, or `auto`); unset = CLI default |
+| `AGBOT_REASONING_EFFORT` | Copilot reasoning depth: `none`\|`minimal`\|`low`\|`medium`\|`high`\|`xhigh`\|`max` (default `low`) |
+| `AGBOT_LLM_TIMEOUT` | Seconds allowed per generation (default `180`; raise for `max` reasoning) |
 | `EMAIL` / `PASSWORD` | Garmin Connect login (first-run only) |
 | `GARMINTOKENS` | Where Garmin OAuth tokens are cached (default `~/.garminconnect`) |
 | `COPILOT_EXE` / `COPILOT_HOME` | Only for the default `copilot` backend, if needed |

@@ -15,6 +15,12 @@ if (-not (Test-Path $py)) { $py = "python" }
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUTF8       = "1"
 
+# --- Optional: pin the Copilot CLI model + reasoning effort (else CLI defaults). ---
+# Usual place for these is .env, but you can also uncomment here:
+# $env:AGBOT_MODEL            = "gpt-5.6-luna"   # any id from `/model`, or "auto"
+# $env:AGBOT_REASONING_EFFORT = "max"           # none|minimal|low|medium|high|xhigh|max
+# $env:AGBOT_LLM_TIMEOUT      = "600"            # raise for slow high-reasoning models
+
 # Load .env (simple KEY=VALUE lines) if present, so tokens/keys are available.
 $envFile = Join-Path $root ".env"
 if (Test-Path $envFile) {
