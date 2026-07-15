@@ -1735,6 +1735,45 @@ def maybe_auto_summary():
     do_summary(own, auto=True)
 
 
+def _todays_food_log_times(now):
+    """Local datetimes of today's journaled food entries. Used to skip a meal nudge
+    for a meal that's already been logged (the journal is the bot's own food log)."""
+    times = []
+    try:
+        with open(JOURNAL_FILE, "r", encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().strip().split("\n") if ln]
+    except FileNotFoundError:
+        return times
+    today = now.date().isoformat()
+    for ln in lines[-JOURNAL_KEEP:]:
+        try:
+            e = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if e.get("date") != today:
+            continue
+        try:
+            times.append(datetime.fromisoformat(e.get("ts") or ""))
+        except ValueError:
+            continue
+    return times
+
+
+def _meal_slot_windows():
+    """Each meal slot -> (lo_min, hi_min) span of the day it 'owns', with boundaries
+    at the midpoints between the configured slot times (first slot opens at 00:00,
+    last closes at 24:00). A food entry whose local time lands in a slot's span means
+    that meal is already logged, so its reminder can be skipped."""
+    slots = sorted(((slot, hh * 60 + mm) for slot, hh, mm, _ in MEAL_REMINDERS),
+                   key=lambda x: x[1])
+    windows = {}
+    for i, (slot, mins) in enumerate(slots):
+        lo = 0 if i == 0 else (slots[i - 1][1] + mins) // 2
+        hi = 24 * 60 if i == len(slots) - 1 else (mins + slots[i + 1][1]) // 2
+        windows[slot] = (lo, hi)
+    return windows
+
+
 def maybe_meal_reminders():
     own = owner()
     if not own:
@@ -1748,11 +1787,19 @@ def maybe_meal_reminders():
     if not isinstance(sent, dict):
         sent = {}
     changed = False
+    food_times = _todays_food_log_times(now)
+    windows = _meal_slot_windows()
     for slot, hh, mm, text in MEAL_REMINDERS:
         if sent.get(slot) == today:
             continue
         target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if now < target:
+            continue
+        lo, hi = windows.get(slot, (0, 24 * 60))
+        if any(lo <= (t.hour * 60 + t.minute) < hi for t in food_times):
+            log.info("Meal reminder %s skipped - already logged", slot)
+            sent[slot] = today
+            changed = True
             continue
         late_min = (now - target).total_seconds() / 60
         if late_min <= MEAL_CATCHUP_MIN:
@@ -1785,6 +1832,30 @@ def hydration_slots_due(now, sent, today):
     return due
 
 
+def _hydration_progress():
+    """(logged_ml, goal_ml) for today from Garmin, or (None, None) on any error.
+    Fetched only when a hydration slot is actually due, so most poll loops cost nothing."""
+    try:
+        logged, goal = garmin_coach.hydration_today()
+    except Exception as exc:  # noqa: BLE001
+        log.error("hydration fetch failed: %s", exc)
+        return None, None
+    return logged, goal
+
+
+def _hydration_on_pace(hour, logged_ml, goal_ml):
+    """True only when Garmin CONFIRMS the user is at/ahead of the expected linear pace
+    toward today's goal by this slot's hour - in which case the nudge is skipped. Any
+    missing/unsynced data returns False so we nudge as before (fail-open)."""
+    if not isinstance(logged_ml, (int, float)) or not isinstance(goal_ml, (int, float)) or goal_ml <= 0:
+        return False
+    span = max(1, HYDRATION_END - HYDRATION_START)
+    frac = min(1.0, max(0.0, (hour - HYDRATION_START) / span))
+    if frac <= 0:
+        return False  # first slot of the day: always nudge to kick hydration off
+    return logged_ml >= goal_ml * frac
+
+
 def maybe_hydration_reminders():
     own = owner()
     if not own:
@@ -1797,9 +1868,15 @@ def maybe_hydration_reminders():
         sent = {}
     if not isinstance(sent, dict):
         sent = {}
+    due = hydration_slots_due(now, sent, today)
+    if not due:
+        return
+    logged_ml, goal_ml = _hydration_progress()
     changed = False
-    for idx, slot, hh, should in hydration_slots_due(now, sent, today):
-        if should:
+    for idx, slot, hh, should in due:
+        if should and _hydration_on_pace(hh, logged_ml, goal_ml):
+            log.info("Hydration %s skipped - on pace (%s/%s ml)", slot, logged_ml, goal_ml)
+        elif should:
             log.info("Hydration reminder %s at %s", slot, now.strftime("%H:%M"))
             send_message(own, HYDRATION_MESSAGES[idx % len(HYDRATION_MESSAGES)])
         else:
