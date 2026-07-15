@@ -125,12 +125,14 @@ HYDRATION_MESSAGES = (
 POLL_TIMEOUT = 50          # long-poll seconds
 COPILOT_TIMEOUT = int(os.environ.get("AGBOT_LLM_TIMEOUT", "180"))  # seconds/generation (raise for slow high-reasoning models)
 SINGLETON_PORT = 49517     # localhost lock so only one instance polls
-MAX_STORED_TURNS = 40      # conversation turns kept on disk
+MAX_STORED_TURNS = 500     # hard ceiling of conversation turns kept on disk (time-prune below keeps ~a week)
+HISTORY_KEEP_DAYS = 8      # keep conversation turns on disk for this many days (covers the 7-day prompt window)
 FITNESS_MAX_AGE_H = 20     # refresh cached fitness profile if older than this
-HISTORY_PROMPT_TURNS = 14  # recent turns injected into a Q&A prompt
-HISTORY_PROMPT_CHARS = 5000  # char budget for injected history
-JOURNAL_PROMPT_CHARS = 2500  # durable notes injected into every prompt
-JOURNAL_KEEP = 60            # journal lines kept on disk
+HISTORY_PROMPT_DAYS = 7    # inject the last week of conversation into prompts (food, water, workouts, mood, plans)
+HISTORY_PROMPT_TURNS = 300  # safety ceiling on injected turns after the day-window filter
+HISTORY_PROMPT_CHARS = 16000  # char budget for injected history (~a week of chat; oldest truncated if over)
+JOURNAL_PROMPT_CHARS = 6000  # durable notes injected into every prompt (a week+ of food / coach-plan notes)
+JOURNAL_KEEP = 120          # journal lines kept on disk
 HEALTH_ACTIVE_DAYS = 45      # active injury/illness flags injected for up to this long
 HEALTH_PROMPT_CHARS = 800    # char budget for injected health flags
 ACTIVITY_CHECK_SECS = 300    # how often to poll for a finished workout
@@ -178,6 +180,7 @@ def append_history(role, text):
     hist = load_history()
     hist.append({"role": role, "text": text,
                  "ts": datetime.now().isoformat(timespec="seconds")})
+    hist = [t for t in hist if _within_days(t.get("ts"), HISTORY_KEEP_DAYS)]
     hist = hist[-MAX_STORED_TURNS:]
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
@@ -277,8 +280,19 @@ def _day_tag(date_str):
     return ""
 
 
+def _within_days(ts_str, days):
+    """True if an ISO date/timestamp falls within the last `days` days (today = 0)."""
+    try:
+        d = date.fromisoformat((ts_str or "")[:10])
+    except ValueError:
+        return False
+    return 0 <= (date.today() - d).days <= days
+
+
 def recent_history_text():
-    hist = load_history()[-HISTORY_PROMPT_TURNS:]
+    hist = load_history()
+    hist = [t for t in hist if _within_days(t.get("ts"), HISTORY_PROMPT_DAYS)]
+    hist = hist[-HISTORY_PROMPT_TURNS:]
     lines = []
     for turn in hist:
         who = "You" if turn.get("role") == "user" else "AgBot"
@@ -336,6 +350,33 @@ def _extract_rest_marker(text):
     if not text or not _REST_MARKER_RE.search(text):
         return text, False
     return _REST_MARKER_RE.sub("", text).rstrip(), True
+
+
+_PLAN_MARKER_RE = re.compile(r"\[\[PLAN:\s*(.*?)\]\]", re.IGNORECASE | re.DOTALL)
+
+
+def _extract_plan_marker(text):
+    """Pull a model-emitted [[PLAN: ...]] marker off a reply. The prompts append it when
+    AgBot commits to a MULTI-DAY training intent (e.g. 'I'll program vigorous VO2max
+    intervals over the next few days'), so the plan survives beyond a single chat and can
+    be re-surfaced each morning. Returns (clean_text, plan_or_None)."""
+    if not text:
+        return text, None
+    plans = _PLAN_MARKER_RE.findall(text)
+    if not plans:
+        return text, None
+    clean = _PLAN_MARKER_RE.sub("", text).rstrip()
+    plan = " ".join(" ".join(plans).split()).strip()
+    return clean, (plan or None)
+
+
+def _harvest_plan(text):
+    """Extract any [[PLAN: ...]] marker and journal it as durable coach context so it
+    persists into future briefs/answers. Returns the cleaned reply text."""
+    text, plan = _extract_plan_marker(text)
+    if plan:
+        append_journal("[coach plan] " + plan)
+    return text
 
 
 def recent_journal_text():
@@ -628,8 +669,9 @@ def _html_to_plain(html_text):
 
 
 def send_message(chat_id, text):
-    if text:  # safety net: never let a raw marker ([[LOG: ...]] / [[REST_DAY]]) leak into a message
-        text = _REST_MARKER_RE.sub("", _LOG_MARKER_RE.sub("", text)).rstrip()
+    if text:  # safety net: never let a raw marker ([[LOG: ...]] / [[REST_DAY]] / [[PLAN: ...]]) leak into a message
+        text = _PLAN_MARKER_RE.sub(
+            "", _REST_MARKER_RE.sub("", _LOG_MARKER_RE.sub("", text))).rstrip()
     rendered = md_to_html(text)
     for chunk in _chunks(rendered, 4000):
         if not chunk.strip():
@@ -1070,6 +1112,7 @@ def generate_summary():
     if text:
         text, is_rest = _extract_rest_marker(text)
         _set_coach_rest(is_rest)  # tell the day's check-ins whether the brief prescribed rest
+        text = _harvest_plan(text)  # persist any multi-day training plan the brief commits to
         append_history("user", "GMS (requested the morning brief)")
         append_history("agbot", text)
         save_todays_brief(text)
@@ -1086,6 +1129,7 @@ def generate_qa(question):
         if logged:
             append_journal(logged)  # auto-log any meal the user reported, not just 'log:'-prefixed
             text = text + "\n\n\U0001F37D\uFE0F logged \u2713"
+        text = _harvest_plan(text)  # persist any multi-day training plan this answer commits to
         append_history("user", question)
         append_history("agbot", text)
     if _is_workout_review(question):
@@ -1149,6 +1193,7 @@ def generate_images(image_paths, caption, extra=None, media_label="photo"):
             logged = True
         if logged:
             text = text + "\n\n\U0001F37D\uFE0F logged \u2713"
+        text = _harvest_plan(text)  # persist any multi-day training plan this answer commits to
         plural = "s" if n != 1 else ""
         label = caption or ("[shared " + str(n) + " " + media_label + plural + "]")
         append_history("user", label + " [" + media_label + plural + "]")
@@ -1774,6 +1819,61 @@ def _meal_slot_windows():
     return windows
 
 
+_PROTEIN_RE = re.compile(r"(\d+)\s*g\s*(?:of\s+)?protein", re.IGNORECASE)
+_KCAL_RE = re.compile(r"(\d+)\s*k?cal\b", re.IGNORECASE)
+
+
+def _todays_food_summary(now):
+    """(count, protein_g, kcal) from today's journal food entries. protein_g / kcal are
+    best-effort sums of the '~Xg protein' / '~Y kcal' estimates in the auto-log text (0 if
+    none parseable); count excludes '[coach plan]' notes. Lets a meal nudge show real
+    running totals without calling the model."""
+    count = protein = kcal = 0
+    try:
+        with open(JOURNAL_FILE, "r", encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().strip().split("\n") if ln]
+    except FileNotFoundError:
+        return (0, 0, 0)
+    today = now.date().isoformat()
+    for ln in lines[-JOURNAL_KEEP:]:
+        try:
+            e = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if e.get("date") != today:
+            continue
+        txt = e.get("text") or ""
+        if txt.lstrip().startswith("[coach plan]"):
+            continue
+        count += 1
+        pm = _PROTEIN_RE.search(txt)
+        if pm:
+            protein += int(pm.group(1))
+        km = _KCAL_RE.search(txt)
+        if km:
+            kcal += int(km.group(1))
+    return (count, protein, kcal)
+
+
+def _meal_nudge_text(slot, base_text, now):
+    """Prepend a real-progress header (protein / kcal / items logged so far today) to the
+    standard per-slot meal prompt, so the nudge reflects the whole day, not just the clock.
+    Falls back to the plain prompt when nothing is logged yet."""
+    count, protein, kcal = _todays_food_summary(now)
+    if count <= 0:
+        return base_text
+    bits = []
+    if protein > 0:
+        bits.append("~%dg protein" % protein)
+    if kcal > 0:
+        bits.append("~%d kcal" % kcal)
+    if bits:
+        head = "\U0001F4CA So far today: " + ", ".join(bits) + " logged.\n"
+    else:
+        head = "\U0001F4CA So far today: %d item%s logged.\n" % (count, "s" if count != 1 else "")
+    return head + base_text
+
+
 def maybe_meal_reminders():
     own = owner()
     if not own:
@@ -1804,7 +1904,7 @@ def maybe_meal_reminders():
         late_min = (now - target).total_seconds() / 60
         if late_min <= MEAL_CATCHUP_MIN:
             log.info("Meal reminder: %s at %s", slot, now.strftime("%H:%M"))
-            send_message(own, text)
+            send_message(own, _meal_nudge_text(slot, text, now))
         else:
             log.info("Meal reminder %s missed window (%.0f min late) - skipping",
                      slot, late_min)
@@ -1856,6 +1956,33 @@ def _hydration_on_pace(hour, logged_ml, goal_ml):
     return logged_ml >= goal_ml * frac
 
 
+CUP_ML = 240  # approx ml per "cup" for a friendly count alongside the authoritative ml
+
+
+def _hydration_nudge_text(hour, logged_ml, goal_ml, fallback):
+    """A data-rich hydration nudge: real ml / goal, an approximate cup count, and how far
+    behind linear pace the user is right now. Returns `fallback` (a canned line) when
+    Garmin has no usable hydration data, so a nudge still goes out (fail-open)."""
+    if (not isinstance(logged_ml, (int, float)) or not isinstance(goal_ml, (int, float))
+            or goal_ml <= 0):
+        return fallback
+    span = max(1, HYDRATION_END - HYDRATION_START)
+    frac = min(1.0, max(0.0, (hour - HYDRATION_START) / span))
+    deficit = max(0.0, goal_ml * frac - logged_ml)
+    head = ("\U0001F4A7 AgBot \u00B7 Hydration - you're at %d/%d ml (~%d/%d cups) today"
+            % (round(logged_ml), round(goal_ml), round(logged_ml / CUP_ML),
+               round(goal_ml / CUP_ML)))
+    deficit_cups = round(deficit / CUP_ML)
+    if deficit_cups >= 1:
+        tail = (", about %d cup%s behind pace - grab a glass now."
+                % (deficit_cups, "s" if deficit_cups != 1 else ""))
+    elif deficit > 0:
+        tail = ", a touch behind pace - a few sips keeps you on track."
+    else:
+        tail = " - nicely on track, a top-up keeps you ahead."
+    return head + tail
+
+
 def maybe_hydration_reminders():
     own = owner()
     if not own:
@@ -1877,8 +2004,10 @@ def maybe_hydration_reminders():
         if should and _hydration_on_pace(hh, logged_ml, goal_ml):
             log.info("Hydration %s skipped - on pace (%s/%s ml)", slot, logged_ml, goal_ml)
         elif should:
-            log.info("Hydration reminder %s at %s", slot, now.strftime("%H:%M"))
-            send_message(own, HYDRATION_MESSAGES[idx % len(HYDRATION_MESSAGES)])
+            log.info("Hydration reminder %s at %s (%s/%s ml)", slot,
+                     now.strftime("%H:%M"), logged_ml, goal_ml)
+            send_message(own, _hydration_nudge_text(
+                hh, logged_ml, goal_ml, HYDRATION_MESSAGES[idx % len(HYDRATION_MESSAGES)]))
         else:
             log.info("Hydration %s missed window - skipping", slot)
         sent[slot] = today
