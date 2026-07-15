@@ -29,8 +29,17 @@ function.
   high, recovery time is still counting down, or illness signals (skin-temp + RHR +
   respiration) line up — and calls a genuine **rest / recovery day** when readiness is RED
   or cumulative fatigue is high, instead of always prescribing a workout.
-- **Chat Q&A with memory** — "how did I sleep?", "what's my predicted 10K time?", "give me
-  a 30-min rowing session". Remembers the recent conversation.
+- **Progression coaching** — if your profile goal is to build (not just maintain), on
+  genuinely good-recovery days (GREEN, or a train-ready AMBER when only sleep is a touch
+  short) it *deliberately* programs vigorous aerobic / VO2max intervals aimed at whatever
+  **Load Focus** is under target — the stimulus that moves your Garmin **Training Status
+  toward Productive** instead of parking at Maintaining. Commit to a multi-day block in chat
+  ("build intervals in over the next few days") and it **remembers the plan** and honours it
+  in the coming briefs.
+- **Chat Q&A with a week of memory** — "how did I sleep?", "what's my predicted 10K time?",
+  "give me a 30-min rowing session". It remembers the **last 7 days** of conversation — food,
+  water, workouts, mood, and any multi-day plans you agreed — so its answers and nudges
+  reflect everything you've told it, not just the last message.
 - **Photo analysis** — send a meal, a machine screen, or an exercise; send **several photos
   at once** (an album) and it weighs them up as one set (e.g. "which of these breakfast
   options should I pick?").
@@ -40,7 +49,9 @@ function.
 - **Food logging & nutrition** — just tell it what you ate ("had poha and a protein shake")
   and it **auto-logs** a dated food journal that feeds calorie/protein coaching; a `log:`
   prefix (or `log:` photo caption) still works but isn't required. It only confirms a meal
-  once it's actually saved. Optional meal reminders.
+  once it's actually saved. Optional meal reminders that **skip themselves once you've already
+  logged that meal** — and when one does fire it leads with your **running totals so far today**
+  (≈ protein / calories logged), not just a blank "time for dinner".
 - **Injury/illness awareness** — tell it "my knee hurts" and it asks what's going on,
   remembers it, and adapts training (or calls for rest) until you say `recovered`.
 - **Session-aware debrief** — a workout logged as several back-to-back Garmin activities
@@ -53,8 +64,11 @@ function.
   stop them for the day. When the morning brief itself calls a **rest / recovery day**, the
   check-ins automatically switch to a single gentle rest-aware note — no "did you exercise?"
   nagging on a day the coach told you to rest.
-- **Hydration reminders** — a light "drink water" nudge every 2 hours from 8am–10pm (you log
-  the actual water on your watch); toggleable like the other reminders.
+- **Hydration reminders** — a "drink water" nudge every 2 hours from 8am–10pm (you log the
+  actual water on your watch). They're **pace-aware and data-rich**: each nudge shows your real
+  **ml / cups so far vs the day's goal** and how far behind pace you are, and skips entirely if
+  Garmin shows you're already at or ahead of pace for that time (the 8am kick-off always sends).
+  Toggleable like the other reminders.
 - **Proactive nudges** — auto-sends the brief by ~9:30am if you didn't ask, warns you on a
   rough morning, and (optionally) reminds you to log meals.
 - **Holistic context** — every reply is grounded in your *full* picture: recovery + load +

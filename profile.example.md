@@ -10,7 +10,8 @@ you ("AgBot: add that I tweaked my knee")._
 
 ## Goals
 - **Primary:** _e.g. reduce body fat while building lean muscle (body recomposition)._
-- **Secondary:** _e.g. maintain/improve cardio fitness (VO2max)._
+- **Secondary:** _e.g. progress cardio fitness — build, don't just maintain: raise VO2max
+  and move Garmin Training Status toward Productive (not stuck at Maintaining)._
 
 ## Training availability
 - **N days per week** of intentional training.
@@ -53,4 +54,9 @@ _Optional — how you want the coach to think. Sensible defaults below; edit to 
 - **Protect recovery:** flag short sleep, elevated resting HR, or high ACWR (>1.5) and
   dial intensity back.
 - Progressive overload for strength; keep nutrition advice sustainable, never crash tactics.
+- **Build, don't just maintain (if that's your goal):** on genuinely good-recovery days
+  (GREEN, or a train-ready AMBER), deliberately include vigorous aerobic / VO2max intervals
+  aimed at whatever Load Focus is under target — that's what moves Garmin Training Status
+  toward Productive; easy or strength-only days hold VO2max but won't lift it. Skip it on
+  RED / rest days — recovery wins.
 - Always end a workout suggestion with a one-line safety note (warm up, stop if pain).

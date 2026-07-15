@@ -736,6 +736,25 @@ def latest_activity():
     return None
 
 
+def hydration_today(d_today=None):
+    """Lightweight fetch of today's hydration as (logged_ml, goal_ml). Returns
+    (None, None) on any login/API error or missing field. Used by the bridge's
+    hydration nudges to skip a reminder when the user is already on pace."""
+    d = d_today or date.today()
+    try:
+        g = client()
+    except Exception:  # noqa: BLE001
+        return (None, None)
+    hydr = safe(lambda: g.get_hydration_data(iso(d)))
+    if not isinstance(hydr, dict) or "__error__" in hydr:
+        return (None, None)
+    logged = hydr.get("valueInML")
+    goal = hydr.get("goalInML")
+    logged = logged if isinstance(logged, (int, float)) else None
+    goal = round(goal) if isinstance(goal, (int, float)) else None
+    return (logged, goal)
+
+
 def _parse_local_epoch(s):
     """startTimeLocal ('YYYY-MM-DD HH:MM:SS') -> POSIX epoch (naive = local), or None."""
     try:
