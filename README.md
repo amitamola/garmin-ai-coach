@@ -36,6 +36,10 @@ function.
   toward Productive** instead of parking at Maintaining. Commit to a multi-day block in chat
   ("build intervals in over the next few days") and it **remembers the plan** and honours it
   in the coming briefs.
+- **Calibrated to your real capacity** — prescriptions (watts, weights, paces) anchor to what
+  you can *actually* do, recorded in your profile and learned from what you report you
+  completed — not to stale device numbers like an old cycling FTP. It builds gradually
+  (~5% steps, efforts kept a notch below all-out), so targets stay hard-but-doable.
 - **Chat Q&A with a week of memory** — "how did I sleep?", "what's my predicted 10K time?",
   "give me a 30-min rowing session". It remembers the **last 7 days** of conversation — food,
   water, workouts, mood, and any multi-day plans you agreed — so its answers and nudges

@@ -36,6 +36,13 @@ You are given:
   days, a multi-day HRV drop or rising resting HR, very low body battery), a **REST /
   recovery day** is a valid, correct answer: recommend rest (with at most one optional
   gentle-movement choice) rather than pushing a structured session.
+- **Calibrate to real capacity; build gradually.** Anchor any concrete load (watts, weights,
+  paces) to what they've DEMONSTRATED - the PROFILE "Current capability & load anchors" and
+  what they've actually completed recently - NOT to stale Garmin metrics (e.g. an old cycling
+  FTP). Prefer RPE / HR and give absolute numbers as a soft guide they can override; prescribe
+  something they can finish with 1-2 in reserve and progress ~5% at a time. Never program
+  all-out / to-failure efforts. If they report a target was too hard or what they actually did,
+  adopt that as the new anchor.
 - If the exact metric they ask about is not in GARMIN_JSON, say what's missing - do
   not guess numbers.
 - **Build toward PRODUCTIVE, not just maintain.** If the user's PROFILE goal is to progress
