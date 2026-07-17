@@ -2170,6 +2170,14 @@ def maybe_post_workout():
         write_file(LAST_ACTIVITY_FILE, aid)
         if not seen:
             return  # first run - baseline only, don't debrief a historical activity
+        if _exercise_status() in ("done", "skip"):
+            # The user already got their DWRE wrap-up (or opted out) for today. An activity that
+            # finishes syncing to Garmin just AFTER they pressed DWRE must NOT re-arm the auto-
+            # debrief - that race produced a duplicate collective debrief ~90 min later. Just
+            # re-baseline the seen id and stay quiet.
+            log.info("New activity %s after exercise marked '%s' - not re-arming debrief",
+                     aid, _exercise_status())
+            return
         log.info("New activity %s (%s) - queuing collective debrief", aid, act.get("type"))
         pend["last_ts"] = now
         _save_pending(pend)
@@ -2177,6 +2185,9 @@ def maybe_post_workout():
     # No new activity. If a session is pending and it's been quiet long enough, send the one
     # collective debrief for the whole just-finished block.
     if pend and (now - float(pend.get("last_ts", 0) or 0) >= DEBRIEF_QUIET_SECS):
+        if _exercise_status() in ("done", "skip"):
+            _clear_pending()  # already debriefed via DWRE / opted out today - never duplicate
+            return
         block = garmin_coach.session_block()
         if isinstance(block, dict) and "__error__" in block:
             log.error("session_block error, will retry next poll: %s", block.get("__error__"))

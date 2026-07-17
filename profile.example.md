@@ -47,6 +47,16 @@ programming. Delete what doesn't apply, add what does._
 - _None recorded yet. Add anything ongoing here (e.g. left knee, lower back) and the
   coach will adapt. The bot also tracks injuries/illness you report in chat._
 
+## Current capability & load anchors
+_Optional but recommended — tell the coach what you can ACTUALLY do, so it scales
+watts / weights / paces to **you** instead of to Garmin's stored (and often stale) numbers._
+- _e.g. **Cycling:** my real working FTP is ~180W (Garmin's stored FTP is old / too high) —
+  anchor interval watts to that, not the device value._
+- _e.g. **Strength:** working sets around <your weights>, always leaving 1–2 reps in reserve._
+- _e.g. **Phase:** rebuilding after time off — progress in small steps (~5%), no all-out or
+  to-failure efforts; RPE 8 with a little in reserve is my ceiling for now._
+- _The coach also learns from what you report you actually did and re-anchors to it._
+
 ## Coaching principles (for the bot)
 _Optional — how you want the coach to think. Sensible defaults below; edit to taste._
 - **Adapt to readiness daily:** when training readiness is LOW or HRV is below baseline,
