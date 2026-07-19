@@ -12,6 +12,8 @@ you ("AgBot: add that I tweaked my knee")._
 - **Primary:** _e.g. reduce body fat while building lean muscle (body recomposition)._
 - **Secondary:** _e.g. progress cardio fitness — build, don't just maintain: raise VO2max
   and move Garmin Training Status toward Productive (not stuck at Maintaining)._
+- **Weight tracking:** _e.g. I weigh in every morning under the same conditions (fasted), so my
+  `weight_trend_30d` is low-noise — trust the trend as the headline fat-loss progress signal._
 
 ## Training availability
 - **N days per week** of intentional training.

@@ -474,6 +474,68 @@ def build_snapshot(d_today=None):
                 "bone_mass_g": last.get("boneMass"),
             }
 
+    # Weight TREND (fat-loss progress signal) - built from the SAME 30-day body-comp pull
+    # above, so no extra API call. Oldest->newest series (kg) + net change + direction, so
+    # the daily brief can actually track PROGRESS, not just report a single weigh-in.
+    weight_trend = None
+    if isinstance(weight, dict):
+        _pts = []
+        for w in sorted((weight.get("dateWeightList") or []),
+                        key=lambda e: e.get("calendarDate") or ""):
+            _g = w.get("weight")
+            if not isinstance(_g, (int, float)):
+                continue
+            _pts.append({
+                "date": w.get("calendarDate"),
+                "weight_kg": round(_g / 1000.0, 1),
+                "body_fat_pct": w.get("bodyFat"),
+            })
+        if _pts:
+            _pts = _pts[-14:]  # last ~2 weeks is the meaningful daily-brief window
+            _latest, _earliest = _pts[-1], _pts[0]
+
+            def _closest_before(days):
+                try:
+                    target = date.fromisoformat(_latest["date"][:10]) - timedelta(days=days)
+                except (ValueError, TypeError):
+                    return None
+                best, best_gap = None, None
+                for _p in _pts[:-1]:
+                    try:
+                        _pd = date.fromisoformat((_p["date"] or "")[:10])
+                    except ValueError:
+                        continue
+                    _gap = abs((_pd - target).days)
+                    if best_gap is None or _gap < best_gap:
+                        best, best_gap = _p, _gap
+                return best if (best is not None and best_gap is not None and best_gap <= 4) else None
+
+            def _chg(ref):
+                if ref and isinstance(ref.get("weight_kg"), (int, float)):
+                    return round(_latest["weight_kg"] - ref["weight_kg"], 1)
+                return None
+
+            _net = _chg(_earliest) if _earliest is not _latest else None
+            _c7 = _chg(_closest_before(7))
+            _dir = None
+            if isinstance(_net, (int, float)):
+                _dir = "down" if _net <= -0.3 else ("up" if _net >= 0.3 else "flat")
+            try:
+                _span = (date.fromisoformat(_latest["date"][:10])
+                         - date.fromisoformat(_earliest["date"][:10])).days
+            except (ValueError, TypeError):
+                _span = None
+            weight_trend = {
+                "series": _pts,
+                "count": len(_pts),
+                "latest_kg": _latest["weight_kg"],
+                "latest_date": _latest["date"],
+                "change_last_7d_kg": _c7,
+                "net_change_kg": _net,
+                "span_days": _span,
+                "direction": _dir,
+            }
+
     # ---- Whole-day wellness (get_user_summary is Garmin's richest single call) ----
     usumm = safe(lambda: g.get_user_summary(iso(d_today)))
     resp = safe(lambda: g.get_respiration_data(iso(d_today)))
@@ -712,6 +774,7 @@ def build_snapshot(d_today=None):
         "body_battery_current_age_min": bb_current_age_min,
         "body_battery_2d": bb,
         "latest_weigh_in_30d": latest_weight,
+        "weight_trend_30d": weight_trend,
         "last_sync_gmt": last_sync_gmt,
         "last_sync_age_min": last_sync_age_min,
         "profile_config": profile_config,
