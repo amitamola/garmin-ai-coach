@@ -759,7 +759,12 @@ def build_snapshot(d_today=None):
             _maint = _bmr * _af
             _bmi_cat = ("underweight" if _bmi < 18.5 else "normal" if _bmi < 25
                         else "overweight" if _bmi < 30 else "obese")
-            _deficit = (300 if _bmi < 23 else 400 if _bmi < 25 else 500 if _bmi < 30 else 600)
+            _band_deficit = (300 if _bmi < 23 else 400 if _bmi < 25 else 500 if _bmi < 30 else 600)
+            # Cap the deficit at ~0.5% bodyweight/week - the muscle-preserving recomp ceiling
+            # (0.5% x kg x 7700 kcal/kg per week / 7 days ~= 5.5 x kg kcal/day). Protects lean
+            # mass so a fat-loss phase stays a recomp, not a muscle-shedding crash cut.
+            _deficit_cap = round(0.005 * _wt_kg * 7700 / 7)
+            _deficit = min(_band_deficit, _deficit_cap)
             # Never prescribe below BMR or a hard 1500 floor - no crash dieting (profile rule).
             _target = max(round(_maint - _deficit), round(_bmr), 1500)
             calorie_budget = {
@@ -772,8 +777,10 @@ def build_snapshot(d_today=None):
                 "activity_factor": _af,
                 "maintenance_kcal": round(_maint),
                 "deficit_kcal": _deficit,
+                "deficit_cap_kcal": _deficit_cap,
                 "target_kcal": _target,
-                "basis": "Mifflin-St Jeor BMR x activity factor, minus a BMI-scaled deficit; "
+                "basis": "Mifflin-St Jeor BMR x activity factor, minus a fat-loss deficit "
+                         "(BMI-scaled, then capped at ~0.5% bodyweight/week to preserve muscle); "
                          "food is logged in the bot (not Garmin), so subtract logged intake "
                          "from target_kcal for calories remaining.",
             }
