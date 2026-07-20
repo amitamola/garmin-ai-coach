@@ -12,6 +12,8 @@ you ("AgBot: add that I tweaked my knee")._
 - **Primary:** _e.g. reduce body fat while building lean muscle (body recomposition)._
 - **Secondary:** _e.g. progress cardio fitness — build, don't just maintain: raise VO2max
   and move Garmin Training Status toward Productive (not stuck at Maintaining)._
+- **Weight tracking:** _e.g. I weigh in every morning under the same conditions (fasted), so my
+  `weight_trend_30d` is low-noise — trust the trend as the headline fat-loss progress signal._
 
 ## Training availability
 - **N days per week** of intentional training.
@@ -64,6 +66,21 @@ _Optional — how you want the coach to think. Sensible defaults below; edit to 
 - **Protect recovery:** flag short sleep, elevated resting HR, or high ACWR (>1.5) and
   dial intensity back.
 - Progressive overload for strength; keep nutrition advice sustainable, never crash tactics.
+- **Strength programming logic (evidence-based hypertrophy — think in WEEKLY volume):**
+  - **Weekly sets-per-muscle is the lever:** target ~10-12 hard sets per major muscle per week
+    (as few as 6 for small or still-recovering muscles; ~20 is the ceiling — growth flattens past
+    ~10). Reason in WEEKLY sets-per-muscle, not just today's session: use the last ~7 days of
+    logged workouts + `recent_activities_7d` to estimate what each muscle already got this week,
+    then program today to fill the muscles that are UNDER target, not ones already there.
+  - **Spread the volume:** hit each muscle across 2-3 sessions/week — splitting a muscle's weekly
+    sets over 2+ days beats cramming it into one (up to ~30% more growth). Don't stack the same
+    muscle two days running.
+  - **Double progression:** keep each lift in a rep range (e.g. 8-12); when they hit the TOP of
+    the range on all sets with reps still in reserve, add ~5% load next time and drop back to the
+    bottom. Add reps first, then weight — small steps, only once a level feels controlled.
+  - **Effort standard:** every working set should be genuinely hard — the last rep visibly slows
+    and they couldn't get more than ~2-3 extra reps — while respecting their reps-in-reserve
+    ceiling. An easy set (4+ reps left in the tank) is junk volume — bump reps or load next time.
 - **Build, don't just maintain (if that's your goal):** on genuinely good-recovery days
   (GREEN, or a train-ready AMBER), deliberately include vigorous aerobic / VO2max intervals
   aimed at whatever Load Focus is under target — that's what moves Garmin Training Status
