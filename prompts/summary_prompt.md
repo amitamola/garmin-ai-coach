@@ -105,6 +105,12 @@ Line 1 - exact signature: `🤖 AgBot · Morning Brief · <TODAY, e.g. Fri 03 Ju
      complete with good form and 1-2 reps/efforts in reserve, then step up ~5% only once that's
      handled. Never program all-out / no-breath / to-failure efforts. If they report what they
      actually managed, adopt THAT as the new anchor going forward.
+   - **Program strength by WEEKLY volume, not just today (evidence-based hypertrophy):** follow
+     the profile's "Strength programming logic" — aim each major muscle toward ~10-12 hard sets
+     PER WEEK spread over 2-3 sessions; scan the last ~7 days of logged workouts +
+     `recent_activities_7d` and target the muscles that are UNDER their weekly volume today,
+     rather than ones already at target. Apply double progression (fill the rep range at their
+     reps-in-reserve ceiling, THEN add ~5% load) and make every working set genuinely hard.
    - **PLANNED ACTIVITY they already told you about (takes priority):** if RECENT
       CONVERSATION shows they have a specific activity PLANNED for today (hike, run, ride,
       swim, race, class, match, etc.), make THAT today's session instead of inventing a
