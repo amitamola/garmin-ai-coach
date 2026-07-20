@@ -570,9 +570,20 @@ def build_snapshot(d_today=None):
             "body_battery_during_sleep": usumm.get("bodyBatteryDuringSleep"),
             "body_battery_at_wake": usumm.get("bodyBatteryAtWakeTime"),
             "abnormal_hr_alerts": usumm.get("abnormalHeartRateAlertsCount"),
+            # Garmin's remainingKilocalories / netCalorieGoal are only meaningful if food is
+            # logged IN GARMIN. The user logs meals in the bot instead, so includesCalorieConsumedData
+            # is False and Garmin's "remaining" is just netCalorieGoal + active burn - it ignores
+            # everything they ate and even GROWS as they train, which made the coach quote a bogus
+            # multi-thousand-kcal "calorie room". Only surface it when Garmin truly has their intake;
+            # otherwise give honest expenditure and flag that intake must come from the bot's log.
+            "calorie_intake_tracked_in_garmin": bool(usumm.get("includesCalorieConsumedData")),
+            "energy_burned_so_far_kcal": (round(usumm.get("totalKilocalories"))
+                                          if isinstance(usumm.get("totalKilocalories"), (int, float)) else None),
             "remaining_kcal": (round(usumm.get("remainingKilocalories"))
-                               if isinstance(usumm.get("remainingKilocalories"), (int, float)) else None),
-            "net_calorie_goal": usumm.get("netCalorieGoal"),
+                               if usumm.get("includesCalorieConsumedData")
+                               and isinstance(usumm.get("remainingKilocalories"), (int, float)) else None),
+            "net_calorie_goal": (usumm.get("netCalorieGoal")
+                                 if usumm.get("includesCalorieConsumedData") else None),
         }
         if isinstance(resp, dict) and "__error__" not in resp:
             wellness["respiration_sleep_avg"] = resp.get("avgSleepRespirationValue")
@@ -714,6 +725,61 @@ def build_snapshot(d_today=None):
             "habitual_sleep_window": _win,
         }.items() if v is not None} or None
 
+    # ---- Daily calorie budget (deterministic fat-loss target) -----------------------
+    # The user logs food in the BOT, not Garmin, so Garmin's remaining_kcal is bogus (it
+    # ignores their intake). Instead compute a real daily intake TARGET from their own body
+    # stats: Mifflin-St Jeor BMR x a Harris-Benedict activity multiplier (banded off
+    # Garmin's 1-10 activityLevel) = maintenance; minus a BMI-scaled fat-loss deficit =
+    # target_kcal. The model then subtracts what they have LOGGED today to show calories
+    # remaining. Reuses the already-fetched user profile, so no extra API call.
+    calorie_budget = None
+    try:
+        _sex = (_ud.get("gender") or "").upper()
+        _ht_cm = _ud.get("height")
+        _wt_kg = None
+        if latest_weight and isinstance(latest_weight.get("weight_g"), (int, float)):
+            _wt_kg = latest_weight["weight_g"] / 1000.0
+        elif isinstance(_ud.get("weight"), (int, float)):
+            _wt_kg = _ud["weight"] / 1000.0
+        _cb_age = None
+        try:
+            _bd = date.fromisoformat(_ud.get("birthDate"))
+            _cb_age = d_today.year - _bd.year - ((d_today.month, d_today.day) < (_bd.month, _bd.day))
+        except Exception:  # noqa: BLE001
+            _cb_age = None
+        if _wt_kg and isinstance(_ht_cm, (int, float)) and _cb_age and _sex in ("MALE", "FEMALE"):
+            _bmi = _wt_kg / ((_ht_cm / 100.0) ** 2)
+            _bmr = 10 * _wt_kg + 6.25 * _ht_cm - 5 * _cb_age + (5 if _sex == "MALE" else -161)
+            _al = _ud.get("activityLevel")
+            if isinstance(_al, (int, float)):
+                _af = (1.2 if _al <= 2 else 1.375 if _al <= 4 else 1.55 if _al <= 6
+                       else 1.725 if _al <= 8 else 1.9)
+            else:
+                _af = 1.55  # assume moderately active if Garmin gives no activityLevel
+            _maint = _bmr * _af
+            _bmi_cat = ("underweight" if _bmi < 18.5 else "normal" if _bmi < 25
+                        else "overweight" if _bmi < 30 else "obese")
+            _deficit = (300 if _bmi < 23 else 400 if _bmi < 25 else 500 if _bmi < 30 else 600)
+            # Never prescribe below BMR or a hard 1500 floor - no crash dieting (profile rule).
+            _target = max(round(_maint - _deficit), round(_bmr), 1500)
+            calorie_budget = {
+                "weight_kg": round(_wt_kg, 1),
+                "height_cm": round(_ht_cm),
+                "age": _cb_age,
+                "bmi": round(_bmi, 1),
+                "bmi_category": _bmi_cat,
+                "bmr_kcal": round(_bmr),
+                "activity_factor": _af,
+                "maintenance_kcal": round(_maint),
+                "deficit_kcal": _deficit,
+                "target_kcal": _target,
+                "basis": "Mifflin-St Jeor BMR x activity factor, minus a BMI-scaled deficit; "
+                         "food is logged in the bot (not Garmin), so subtract logged intake "
+                         "from target_kcal for calories remaining.",
+            }
+    except Exception:  # noqa: BLE001
+        calorie_budget = None
+
     # ---- Weekly intensity minutes vs Garmin's goal (WHO 150-min target; vigorous counts double) ----
     wim = safe(lambda: g.get_weekly_intensity_minutes(iso(week_start), iso(d_today)))
     weekly_intensity = None
@@ -775,6 +841,7 @@ def build_snapshot(d_today=None):
         "body_battery_2d": bb,
         "latest_weigh_in_30d": latest_weight,
         "weight_trend_30d": weight_trend,
+        "calorie_budget": calorie_budget,
         "last_sync_gmt": last_sync_gmt,
         "last_sync_age_min": last_sync_age_min,
         "profile_config": profile_config,
