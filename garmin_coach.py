@@ -873,6 +873,29 @@ def latest_activity():
     return None
 
 
+def trained_today(min_duration_s=600):
+    """True if Garmin already shows at least one activity that STARTED today and lasted
+    >= min_duration_s (default 10 min). One cheap fetch of the few most recent activities
+    (they return newest-first, so today's are at the top). Lets the bridge stop the
+    'did you exercise?' check-ins once a real workout is already logged - e.g. a commute
+    ride or gym session. Fails OPEN (returns False) on any login/API error so the check-in
+    still asks rather than silently going quiet."""
+    try:
+        g = client()
+    except Exception:  # noqa: BLE001
+        return False
+    acts = safe(lambda: g.get_activities(0, 8))
+    if not isinstance(acts, list):
+        return False
+    today = date.today().isoformat()
+    for a in acts:
+        if str(a.get("startTimeLocal") or "")[:10] != today:
+            continue
+        if (a.get("duration") or 0) >= min_duration_s:
+            return True
+    return False
+
+
 def hydration_today(d_today=None):
     """Lightweight fetch of today's hydration as (logged_ml, goal_ml). Returns
     (None, None) on any login/API error or missing field. Used by the bridge's
