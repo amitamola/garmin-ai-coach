@@ -19,7 +19,7 @@ import os
 import sys
 import json
 import argparse
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 
 from garminconnect import Garmin
 
@@ -913,6 +913,50 @@ def hydration_today(d_today=None):
     logged = logged if isinstance(logged, (int, float)) else None
     goal = round(goal) if isinstance(goal, (int, float)) else None
     return (logged, goal)
+
+
+def recent_inactivity(now_utc=None):
+    """Look at today's 15-min intraday step buckets (Garmin) and report how long the user
+    has been CONTINUOUSLY sedentary up to the most recent synced bucket. Lets the bridge send
+    a 'get up and move' nudge ONLY when recent inactivity is confirmed (fail-closed - returns
+    None on any error so the caller stays quiet). Bucket timestamps are GMT/UTC ('endGMT'),
+    compared against UTC now. Returns {data_age_min, sedentary_run_min, last_hour_steps,
+    last_level} or None."""
+    try:
+        g = client()
+    except Exception:  # noqa: BLE001
+        return None
+    now_utc = now_utc or datetime.now(timezone.utc)
+    local_today = now_utc.astimezone().date().isoformat()
+    buckets = safe(lambda: g.get_steps_data(local_today))
+    if not isinstance(buckets, list) or not buckets:
+        return None
+    parsed = []
+    for b in buckets:
+        try:
+            end = datetime.fromisoformat(b["endGMT"]).replace(tzinfo=timezone.utc)
+        except Exception:  # noqa: BLE001
+            continue
+        parsed.append((end, b))
+    if not parsed:
+        return None
+    parsed.sort(key=lambda x: x[0])
+    last_end, last_b = parsed[-1]
+    data_age_min = round((now_utc - last_end).total_seconds() / 60)
+    run_min = 0
+    for _end, b in reversed(parsed):
+        if b.get("primaryActivityLevel") == "sedentary":
+            run_min += 15
+        else:
+            break
+    hour_cutoff = last_end - timedelta(minutes=60)
+    last_hour_steps = sum((b.get("steps") or 0) for _end, b in parsed if _end > hour_cutoff)
+    return {
+        "data_age_min": data_age_min,
+        "sedentary_run_min": run_min,
+        "last_hour_steps": last_hour_steps,
+        "last_level": last_b.get("primaryActivityLevel"),
+    }
 
 
 def _parse_local_epoch(s):
