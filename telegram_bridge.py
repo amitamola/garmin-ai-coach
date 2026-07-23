@@ -2031,7 +2031,7 @@ def maybe_hydration_reminders():
 # Ask a few times a day whether the recommended exercise got done. Fires ONLY while today is
 # unresolved; once the user replies DWRE (done -> summary) or that they're skipping/resting,
 # the check-ins stop for the day. Absence of a done/skip marker = 'pending'.
-EXERCISE_CHECKIN_HOURS = (10, 12, 16, 21)
+EXERCISE_CHECKIN_HOURS = (12, 16, 21)
 EXERCISE_CHECKIN_CATCHUP_MIN = 55
 
 
@@ -2145,8 +2145,21 @@ def maybe_exercise_checkins():
     changed = False
     for slot, hh, should in exercise_checkin_slots_due(now, asked):
         if should:
-            log.info("Exercise check-in %s at %s", slot, now.strftime("%H:%M"))
-            send_message(own, _exercise_checkin_message())
+            # Redundant-nag guard: if Garmin already shows a real workout logged today (e.g.
+            # a morning/evening commute ride or a gym session), don't ask 'did you exercise?'.
+            # Leave status untouched so the post-workout auto-debrief still wraps up each
+            # session. Fails open (asks) if the check errors.
+            already_trained = False
+            try:
+                already_trained = garmin_coach.trained_today()
+            except Exception as exc:  # noqa: BLE001
+                log.error("trained_today check failed, asking anyway: %s", exc)
+            if already_trained:
+                log.info("Exercise check-in %s at %s - already trained today, staying quiet",
+                         slot, now.strftime("%H:%M"))
+            else:
+                log.info("Exercise check-in %s at %s", slot, now.strftime("%H:%M"))
+                send_message(own, _exercise_checkin_message())
         else:
             log.info("Exercise check-in %s missed window - skipping", slot)
         asked.append(slot)
